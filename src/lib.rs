@@ -325,13 +325,18 @@ impl fmt::Display for RegisterOrMemory {
 }
 
 impl RegOrMemToOrFromReg {
+    const fn mask() -> u8 {
+        0b11111100
+    }
+
+    const fn id() -> u8 {
+        0b10001000
+    }
+
     /// Returns true if the opcode for the byte matches a
     /// Register/memory to/from register move.
     pub fn opcode_matches(byte: u8) -> bool {
-        let reg_to_reg_mask: u8 = 0b11111100;
-        let reg_to_reg_id: u8 = 0b10001000;
-
-        (byte & reg_to_reg_mask) == reg_to_reg_id
+        (byte & Self::mask()) == Self::id()
     }
 
     fn d_set(bytes: &[u8]) -> bool {
