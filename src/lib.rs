@@ -557,13 +557,36 @@ impl Immediate {
 }
 
 impl ImmediateToRegister {
+    const fn mask() -> u8 {
+        0b11110000
+    }
+
+    const fn id() -> u8 {
+        0b10110000
+    }
+
     /// Returns true if the opcode for the byte matches an immediate to
     /// register move.
     pub fn opcode_matches(byte: u8) -> bool {
-        let immediate_to_reg_mask: u8 = 0b11110000;
-        let immediate_to_reg_id: u8 = 0b10110000;
+        (byte & Self::mask()) == Self::id()
+    }
 
-        (byte & immediate_to_reg_mask) == immediate_to_reg_id
+    fn w_set(bytes: &[u8]) -> bool {
+        (bytes[0] & (1 << 3)) != 0
+    }
+
+    fn reg_field(byte: u8) -> u8 {
+        byte & 0b111
+    }
+
+    fn immediate(bytes: &[u8], wide: bool) -> Immediate {
+        let lo = bytes[1];
+        if wide {
+            let hi = bytes[2];
+            Immediate::from_full(lo, hi)
+        } else {
+            Immediate::from_lo(lo)
+        }
     }
 
     pub fn try_decode(bytes: &mut Vec<u8>) -> Option<Self> {
@@ -574,43 +597,23 @@ impl ImmediateToRegister {
 
         // We first check the w bit, because that will tell us how many bytes
         // this instructions will be.
-        let w_set = (bytes[0] & (1 << 3)) != 0;
+        let w_set = Self::w_set(bytes);
 
-        if w_set {
+        let bytes: Vec<u8> = if w_set {
             if len < 3 {
                 return None;
             }
-
-            // Wide set, so we need 3 bytes.
-            let b: Vec<u8> = bytes.drain(0..3).collect();
-            // Already the last 3 bits.
-            let reg_bits = b[0] & 0b111;
-            let register = Register::from_code(reg_bits, true);
-
-            let lo = b[1];
-            let hi = b[2];
-
-            let immediate = Immediate::from_full(lo, hi);
-
-            Some(ImmediateToRegister {
-                register,
-                immediate,
-            })
+            bytes.drain(0..3).collect()
         } else {
-            // Wide not set, so we need 2 bytes.
-            let b: Vec<u8> = bytes.drain(0..2).collect();
+            bytes.drain(0..2).collect()
+        };
 
-            let reg_bits = b[0] & 0b111;
-            let register = Register::from_code(reg_bits, false);
-            let lo = b[1];
+        let reg_field = Self::reg_field(bytes[0]);
 
-            let immediate = Immediate::from_lo(lo);
-
-            Some(ImmediateToRegister {
-                register,
-                immediate,
-            })
-        }
+        Some(ImmediateToRegister {
+            register: Register::from_code(reg_field, w_set),
+            immediate: Self::immediate(&bytes, w_set),
+        })
     }
 }
 
