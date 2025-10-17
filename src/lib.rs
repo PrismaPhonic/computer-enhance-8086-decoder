@@ -54,6 +54,10 @@ impl Register {
             _ => unreachable!(),
         }
     }
+
+    fn acc(wide: bool) -> Self {
+        if wide { Self::AX } else { Self::AL }
+    }
 }
 
 // Mod notes:
@@ -256,28 +260,36 @@ impl fmt::Display for Operation {
 }
 
 pub enum Mov {
-    RegisterToRegister(RegOrMemToOrFromReg),
+    RegOrMemToOrFromReg(RegOrMemToOrFromReg),
     ImmediateToRegister(ImmediateToRegister),
+    AccToOrFromMem(AccToOrFromMemory),
 }
 
 impl fmt::Display for Mov {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Mov::RegisterToRegister(register_to_register) => register_to_register.fmt(f),
+            Mov::RegOrMemToOrFromReg(reg_or_mem_to_or_from_reg) => reg_or_mem_to_or_from_reg.fmt(f),
             Mov::ImmediateToRegister(immediate_to_register) => immediate_to_register.fmt(f),
+            Mov::AccToOrFromMem(acc_to_or_from_mem) => acc_to_or_from_mem.fmt(f),
         }
     }
 }
 
 impl From<RegOrMemToOrFromReg> for Mov {
     fn from(value: RegOrMemToOrFromReg) -> Self {
-        Self::RegisterToRegister(value)
+        Self::RegOrMemToOrFromReg(value)
     }
 }
 
 impl From<ImmediateToRegister> for Mov {
     fn from(value: ImmediateToRegister) -> Self {
         Self::ImmediateToRegister(value)
+    }
+}
+
+impl From<AccToOrFromMemory> for Mov {
+    fn from(value: AccToOrFromMemory) -> Self {
+        Self::AccToOrFromMem(value)
     }
 }
 
@@ -437,6 +449,74 @@ impl RegOrMemToOrFromReg {
     }
 }
 
+pub struct AccToOrFromMemory {
+    source: RegisterOrMemory,
+    destination: RegisterOrMemory,
+}
+
+impl AccToOrFromMemory {
+    const fn opcode_mask() -> u8 {
+        0b11111110
+    }
+
+    const fn mem_to_acc_id() -> u8 {
+        0b10100000
+    }
+
+    const fn acc_to_mem_id() -> u8 {
+        0b10100010
+    }
+
+    pub fn opcode_matches(byte: u8) -> bool {
+        let masked = byte & Self::opcode_mask();
+        masked == Self::mem_to_acc_id() || masked == Self::acc_to_mem_id()
+    }
+
+    fn w_set(bytes: &[u8]) -> bool {
+        // W bit: 1=word (16-bit), 0=byte (8-bit)
+        (bytes[0] & (1 << 0)) != 0
+    }
+
+    fn mem_is_source(bytes: &[u8]) -> bool {
+        let masked = bytes[0] & Self::opcode_mask();
+        masked == Self::mem_to_acc_id()
+    }
+
+    fn immediate(bytes: &[u8]) -> Immediate {
+        let lo = bytes[1];
+        let hi = bytes[2];
+        Immediate::from_full(lo, hi)
+    }
+
+    pub fn try_decode(bytes: &mut Vec<u8>) -> Option<Self> {
+        if bytes.len() < 3 {
+            return None;
+        }
+        let bytes: Vec<u8> = bytes.drain(0..3).collect();
+
+        let w_set = Self::w_set(&bytes);
+        let immediate = Self::immediate(&bytes);
+
+        if Self::mem_is_source(&bytes) {
+            Some(AccToOrFromMemory {
+                source: Address::DirectAddress(immediate).into(),
+                destination: Register::acc(w_set).into(),
+            })
+        } else {
+            Some(AccToOrFromMemory {
+                source: Register::acc(w_set).into(),
+                destination: Address::DirectAddress(immediate).into(),
+            })
+        }
+    }
+}
+
+impl fmt::Display for AccToOrFromMemory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "mov {}, {}", self.destination, self.source)
+    }
+}
+
 pub struct ImmediateToRegister {
     register: Register,
     immediate: Immediate,
@@ -571,6 +651,8 @@ impl Mov {
             RegOrMemToOrFromReg::try_decode(bytes).map(Mov::from)
         } else if ImmediateToRegister::opcode_matches(op) {
             ImmediateToRegister::try_decode(bytes).map(Mov::from)
+        } else if AccToOrFromMemory::opcode_matches(op) {
+            AccToOrFromMemory::try_decode(bytes).map(Mov::from)
         } else {
             None
         }
@@ -742,5 +824,69 @@ mov [bp + si], cl
 mov [bp], ch";
 
         assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn mov_signed_displacements() {
+        let mut bytes = vec![
+            0x8B, 0x41, 0xDB, // mov ax, [bx + di - 37]
+            0x89, 0x8C, 0xD4, 0xFE, // mov [si - 300], cx
+            0x8B, 0x57, 0xE0, // mov dx, [bx - 32]
+        ];
+
+        let ops = Operations::from_bytes(&mut bytes);
+        let rendered = ops.to_string();
+
+        let expected = "\
+mov ax, [bx + di - 37]
+mov [si - 300], cx
+mov dx, [bx - 32]";
+
+        assert_eq!(rendered, expected);
+        assert!(bytes.is_empty(), "decoder should consume all bytes");
+    }
+
+    #[test]
+    fn mov_accumulator_direct_memory_forms() {
+        let mut bytes = vec![
+            0xA1, 0xFB, 0x09, // mov ax, [2555]
+            0xA1, 0x10, 0x00, // mov ax, [16]
+            0xA3, 0xFA, 0x09, // mov [2554], ax
+            0xA3, 0x0F, 0x00, // mov [15], ax
+        ];
+
+        let ops = Operations::from_bytes(&mut bytes);
+        let rendered = ops.to_string();
+
+        let expected = "\
+mov ax, [2555]
+mov ax, [16]
+mov [2554], ax
+mov [15], ax";
+
+        assert_eq!(rendered, expected);
+        assert!(bytes.is_empty(), "decoder should consume all bytes");
+    }
+
+    #[test]
+    fn mov_accumulator_direct_memory_forms_byte_width() {
+        let mut bytes = vec![
+            0xA0, 0xFB, 0x09, // mov al, [2555]
+            0xA0, 0x10, 0x00, // mov al, [16]
+            0xA2, 0xFA, 0x09, // mov [2554], al
+            0xA2, 0x0F, 0x00, // mov [15], al
+        ];
+
+        let ops = Operations::from_bytes(&mut bytes);
+        let rendered = ops.to_string();
+
+        let expected = "\
+mov al, [2555]
+mov al, [16]
+mov [2554], al
+mov [15], al";
+
+        assert_eq!(rendered, expected);
+        assert!(bytes.is_empty(), "decoder should consume all bytes");
     }
 }
