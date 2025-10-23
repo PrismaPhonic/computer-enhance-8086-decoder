@@ -9,7 +9,10 @@ pub use math::Arithmetic;
 pub use mov::Mov;
 
 use math::{ImmediateToAccumulator, RegMemoryWithRegisterToEither};
-use mov::{AccToOrFromMemory, ImmediateToMemory, ImmediateToRegister, RegOrMemToOrFromReg};
+use mov::{
+    AccToOrFromMemory, ImmediateToMemory, ImmediateToRegister, RegOrMemToOrFromReg,
+    SegToOrFromRegOrMem,
+};
 
 /// There are 4 registers, A, B, C or D.
 /// X means the full 16 bits
@@ -30,18 +33,25 @@ pub enum Register {
     CH,
     DH,
     BH,
+
     // Index registers - 16 bit only.
     SP, // Stack Pointer
     BP, // Base Pointer
     SI, // Source Index
     DI, // Destination Index
+
+    // Segment registers, 16 bit.
+    CS, // Code Segment
+    DS, // Data Segment
+    SS, // Stack Segment
+    ES, // Extra Segment
 }
 
 impl Register {
     /// Create a register from the 3-bit reg field and the W (wide) bit.
     /// wide = false -> 8-bit register
     /// wide = true  -> 16-bit register
-    fn from_code(code: u8, wide: bool) -> Self {
+    pub fn from_code(code: u8, wide: bool) -> Self {
         match (code, wide) {
             // 8-bit registers (W = 0)
             (0b000, false) => Self::AL,
@@ -67,8 +77,24 @@ impl Register {
         }
     }
 
-    fn acc(wide: bool) -> Self {
+    pub fn acc(wide: bool) -> Self {
         if wide { Self::AX } else { Self::AL }
+    }
+
+    /// Return the segment register based on the SR bits.
+    /// 00 - ES
+    /// 01 - CS
+    /// 10 - SS
+    /// 11 - DS
+    /// Bit to left should always be zero, so we include that in id.
+    pub fn seg(code: u8) -> Option<Self> {
+        match code {
+            0b000 => Some(Self::ES),
+            0b001 => Some(Self::CS),
+            0b010 => Some(Self::SS),
+            0b011 => Some(Self::DS),
+            _ => None,
+        }
     }
 }
 
@@ -78,6 +104,7 @@ impl Register {
 // 01 - 8 bit follows (one byte)
 // 10 - 16 bit follows (two bytes)
 // 11 - Register mode (no displacement)
+#[derive(Clone, Copy)]
 pub enum Address {
     // Mod == 00
     // Bx + Si
@@ -189,7 +216,6 @@ impl Address {
 impl fmt::Display for Register {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            // 8-bit
             Self::AL => "al",
             Self::CL => "cl",
             Self::DL => "dl",
@@ -198,7 +224,6 @@ impl fmt::Display for Register {
             Self::CH => "ch",
             Self::DH => "dh",
             Self::BH => "bh",
-            // 16-bit
             Self::AX => "ax",
             Self::CX => "cx",
             Self::DX => "dx",
@@ -207,6 +232,10 @@ impl fmt::Display for Register {
             Self::BP => "bp",
             Self::SI => "si",
             Self::DI => "di",
+            Self::CS => "cs",
+            Self::DS => "ds",
+            Self::SS => "ss",
+            Self::ES => "es",
         };
         f.write_str(s)
     }
@@ -358,6 +387,8 @@ impl Operations {
     pub fn from_bytes(bytes: &mut Vec<u8>) -> Self {
         let mut out = vec![];
         while !bytes.is_empty() {
+            let start_len = bytes.len();
+
             let op = bytes[0];
             let decoded = if AccToOrFromMemory::opcode_matches(op)
                 || ImmediateToRegister::opcode_matches(op)
@@ -365,6 +396,10 @@ impl Operations {
                 || RegOrMemToOrFromReg::opcode_matches(op)
             {
                 Mov::try_decode(bytes).map(Operation::from)
+            } else if let Some(source) = SegToOrFromRegOrMem::classify(op) {
+                SegToOrFromRegOrMem::try_decode(bytes, source)
+                    .map(Mov::from)
+                    .map(Operation::from)
             } else if let Some(opkind) = RegMemoryWithRegisterToEither::classify(op) {
                 RegMemoryWithRegisterToEither::try_decode(bytes, opkind).map(Operation::from)
             } else if let Some(opkind) = ImmediateToAccumulator::classify(op) {
@@ -377,8 +412,17 @@ impl Operations {
                 panic!("Unsupported op code");
             };
 
-            if let Some(op) = decoded {
-                out.push(op);
+            match decoded {
+                Some(opnode) => out.push(opnode),
+                None => {
+                    // If we get here, a decoder was chosen but didn't consume bytes (truncated instr).
+                    // Fail fast with location + opcode.
+                    let consumed = start_len - bytes.len();
+                    panic!(
+                        "Truncated instruction starting at byte {:02X} (consumed {}, op {:02X})",
+                        op, consumed, op
+                    );
+                }
             }
         }
 
@@ -395,6 +439,7 @@ impl Operations {
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum RegisterOrMemory {
     Reg(Register),
     Mem(Address),

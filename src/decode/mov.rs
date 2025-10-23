@@ -7,6 +7,7 @@ pub enum Mov {
     ImmediateToRegister(ImmediateToRegister),
     ImmediateToMemory(ImmediateToMemory),
     AccToOrFromMem(AccToOrFromMemory),
+    Segment(SegToOrFromRegOrMem),
 }
 
 impl fmt::Display for Mov {
@@ -16,6 +17,7 @@ impl fmt::Display for Mov {
             Mov::ImmediateToRegister(immediate_to_register) => immediate_to_register.fmt(f),
             Mov::ImmediateToMemory(immediate_to_memory) => immediate_to_memory.fmt(f),
             Mov::AccToOrFromMem(acc_to_or_from_mem) => acc_to_or_from_mem.fmt(f),
+            Mov::Segment(seg) => seg.fmt(f),
         }
     }
 }
@@ -41,6 +43,12 @@ impl From<ImmediateToMemory> for Mov {
 impl From<AccToOrFromMemory> for Mov {
     fn from(value: AccToOrFromMemory) -> Self {
         Self::AccToOrFromMem(value)
+    }
+}
+
+impl From<SegToOrFromRegOrMem> for Mov {
+    fn from(value: SegToOrFromRegOrMem) -> Self {
+        Self::Segment(value)
     }
 }
 
@@ -417,6 +425,107 @@ impl ImmediateToMemory {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct SegToOrFromRegOrMem {
+    pub segment: Register,
+    pub other: RegisterOrMemory,
+    pub source: Source,
+}
+
+impl fmt::Display for SegToOrFromRegOrMem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.source {
+            Source::RegisterOrMemory => write!(f, "mov {}, {}", self.segment, self.other),
+            Source::Segment => write!(f, "mov {}, {}", self.other, self.segment),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum Source {
+    Segment,
+    RegisterOrMemory,
+}
+
+impl SegToOrFromRegOrMem {
+    pub fn classify(op: u8) -> Option<Source> {
+        // Op code is the entire byte for these two
+        match op {
+            0b1000_1110 => Some(Source::RegisterOrMemory),
+            0b1000_1100 => Some(Source::Segment),
+            _ => None,
+        }
+    }
+
+    fn mod_field(byte: u8) -> u8 {
+        byte >> 6
+    }
+
+    fn seg_field(byte: u8) -> u8 {
+        let shifted = byte >> 3;
+        shifted & 0b111
+    }
+
+    fn rm_field(byte: u8) -> u8 {
+        byte & 0b111
+    }
+
+    fn mod_seg_rm(bytes: &[u8]) -> (u8, u8, u8) {
+        let byte = bytes[1];
+        (
+            Self::mod_field(byte),
+            Self::seg_field(byte),
+            Self::rm_field(byte),
+        )
+    }
+
+    fn displacement_bytes(mod_field: u8, rm_field: u8) -> u8 {
+        match mod_field {
+            0b00 if rm_field == 0b110 => 2,
+            0b10 => 2,
+            0b01 => 1,
+            _ => 0,
+        }
+    }
+
+    pub fn try_decode(bytes: &mut Vec<u8>, source: Source) -> Option<Self> {
+        if bytes.len() < 2 {
+            return None;
+        }
+
+        let (mod_field, seg_field, rm_field) = Self::mod_seg_rm(bytes);
+        let displacement = Self::displacement_bytes(mod_field, rm_field);
+
+        let bytes: Vec<u8> = bytes.drain(0..2 + displacement as usize).collect();
+
+        let segment = Register::seg(seg_field)?;
+        match mod_field {
+            0b11 => {
+                // Register to register
+                Some(Self {
+                    segment,
+                    other: Register::from_code(rm_field, true).into(),
+                    source,
+                })
+            }
+            _ => {
+                // All other fields are addressed based.
+                Some(Self {
+                    segment,
+                    other: Address::from_fields(
+                        rm_field,
+                        mod_field,
+                        (displacement >= 1).then(|| bytes[2]),
+                        (displacement == 2).then(|| bytes[3]),
+                    )
+                    .into(),
+                    source,
+                })
+            }
+        }
+    }
+}
+
 impl Mov {
     pub fn try_decode(bytes: &mut Vec<u8>) -> Option<Self> {
         if bytes.len() < 2 {
@@ -434,6 +543,8 @@ impl Mov {
             AccToOrFromMemory::try_decode(bytes).map(Mov::from)
         } else if ImmediateToMemory::opcode_matches(op) {
             ImmediateToMemory::try_decode(bytes).map(Mov::from)
+        } else if let Some(source) = SegToOrFromRegOrMem::classify(op) {
+            SegToOrFromRegOrMem::try_decode(bytes, source).map(Mov::from)
         } else {
             None
         }
@@ -672,6 +783,34 @@ mov ax, [2555]
 mov ax, [16]
 mov [2554], ax
 mov [15], ax";
+
+        assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn mov_segment_reg_and_mem_prints() {
+        use crate::*;
+
+        let mut bytes = vec![
+            0x8E, 0xDB, // mov ds, bx
+            0x8C, 0xD8, // mov ax, ds
+            0x8E, 0x52, 0x04, // mov ss, [bp + si + 4]
+            0x8C, 0x07, // mov [bx], es
+            0x8C, 0x5E, 0x00, // mov [bp], ds
+            0x8C, 0xCB, // mov bx, cs
+        ];
+
+        let ops = Operations::from_bytes(&mut bytes);
+        assert!(bytes.is_empty(), "decoder should consume all bytes");
+
+        let rendered = ops.to_string();
+        let expected = "\
+mov ds, bx
+mov ax, ds
+mov ss, [bp + si + 4]
+mov [bx], es
+mov [bp], ds
+mov bx, cs";
 
         assert_eq!(rendered, expected);
     }
