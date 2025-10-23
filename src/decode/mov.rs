@@ -1,4 +1,4 @@
-use crate::*;
+use crate::decode::*;
 
 use std::fmt;
 
@@ -45,8 +45,8 @@ impl From<AccToOrFromMemory> for Mov {
 }
 
 pub struct RegOrMemToOrFromReg {
-    destination: RegisterOrMemory,
-    source: RegisterOrMemory,
+    pub destination: RegisterOrMemory,
+    pub source: RegisterOrMemory,
 }
 
 impl RegOrMemToOrFromReg {
@@ -232,8 +232,8 @@ impl fmt::Display for AccToOrFromMemory {
 }
 
 pub struct ImmediateToRegister {
-    register: Register,
-    immediate: Immediate,
+    pub register: Register,
+    pub immediate: Immediate,
 }
 
 impl ImmediateToRegister {
