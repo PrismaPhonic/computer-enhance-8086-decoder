@@ -14,6 +14,8 @@ use mov::{
     SegToOrFromRegOrMem,
 };
 
+use crate::collections::Instructions;
+
 /// There are 4 registers, A, B, C or D.
 /// X means the full 16 bits
 /// L means the lower 8 bits (right side)
@@ -448,29 +450,32 @@ impl AsRef<[Operation]> for Operations {
 }
 
 impl Operations {
-    pub fn from_bytes(bytes: &mut Vec<u8>) -> Self {
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
         let mut out = vec![];
-        while !bytes.is_empty() {
-            let start_len = bytes.len();
+        let mut instructions: Instructions = bytes.into();
+        while !instructions.is_empty() {
+            let start_len = instructions.len();
 
-            let op = bytes[0];
+            let op = instructions[0];
             let decoded = if AccToOrFromMemory::opcode_matches(op)
                 || ImmediateToRegister::opcode_matches(op)
                 || ImmediateToMemory::opcode_matches(op)
                 || RegOrMemToOrFromReg::opcode_matches(op)
             {
-                Mov::try_decode(bytes).map(Operation::from)
+                Mov::try_decode(&mut instructions).map(Operation::from)
             } else if let Some(source) = SegToOrFromRegOrMem::classify(op) {
-                SegToOrFromRegOrMem::try_decode(bytes, source)
+                SegToOrFromRegOrMem::try_decode(&mut instructions, source)
                     .map(Mov::from)
                     .map(Operation::from)
             } else if let Some(opkind) = RegMemoryWithRegisterToEither::classify(op) {
-                RegMemoryWithRegisterToEither::try_decode(bytes, opkind).map(Operation::from)
+                RegMemoryWithRegisterToEither::try_decode(&mut instructions, opkind)
+                    .map(Operation::from)
             } else if let Some(opkind) = ImmediateToAccumulator::classify(op) {
-                ImmediateToAccumulator::try_decode(bytes, opkind).map(Operation::from)
+                ImmediateToAccumulator::try_decode(&mut instructions, opkind).map(Operation::from)
             } else if math::ImmediateToRegisterOrMemory::opcode_matches(op) {
-                math::ImmediateToRegisterOrMemory::try_decode(bytes).map(Operation::from)
-            } else if let Some(jmp) = Jump::try_decode(bytes) {
+                math::ImmediateToRegisterOrMemory::try_decode(&mut instructions)
+                    .map(Operation::from)
+            } else if let Some(jmp) = Jump::try_decode(&mut instructions) {
                 Some(Operation::from(jmp))
             } else {
                 panic!("Unsupported op code");
@@ -481,7 +486,7 @@ impl Operations {
                 None => {
                     // If we get here, a decoder was chosen but didn't consume bytes (truncated instr).
                     // Fail fast with location + opcode.
-                    let consumed = start_len - bytes.len();
+                    let consumed = start_len - instructions.len();
                     panic!(
                         "Truncated instruction starting at byte {:02X} (consumed {}, op {:02X})",
                         op, consumed, op
@@ -497,9 +502,9 @@ impl Operations {
         let path = std::path::PathBuf::from(file_path);
         let absolute = path.canonicalize().expect("Failed to create absolute path");
         println!("path: {:?}", absolute);
-        let mut bytes = fs::read(absolute)?;
+        let bytes = fs::read(absolute)?;
 
-        Ok(Self::from_bytes(&mut bytes))
+        Ok(Self::from_bytes(bytes))
     }
 }
 

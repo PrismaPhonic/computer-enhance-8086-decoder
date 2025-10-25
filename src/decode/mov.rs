@@ -114,16 +114,13 @@ impl RegOrMemToOrFromReg {
         }
     }
 
-    pub fn try_decode(bytes: &mut Vec<u8>) -> Option<Self> {
-        if bytes.len() < 2 {
-            return None;
-        }
-
-        let (mod_field, reg_field, rm_field) = Self::mod_reg_rm(bytes);
+    pub fn try_decode(bytes: &mut Instructions) -> Option<Self> {
+        let (mod_field, reg_field, rm_field) = Self::mod_reg_rm(bytes.peak(2)?);
 
         let displacement = Self::displacement_bytes(mod_field, rm_field);
+        let need = 2 + displacement as usize;
 
-        let bytes: Vec<u8> = bytes.drain(0..2 + displacement as usize).collect();
+        let bytes = bytes.take(need)?;
 
         let w_set = Self::w_set(&bytes);
         let d_set = Self::d_set(&bytes);
@@ -210,11 +207,8 @@ impl AccToOrFromMemory {
         Immediate::from_full(lo, hi)
     }
 
-    pub fn try_decode(bytes: &mut Vec<u8>) -> Option<Self> {
-        if bytes.len() < 3 {
-            return None;
-        }
-        let bytes: Vec<u8> = bytes.drain(0..3).collect();
+    pub fn try_decode(bytes: &mut Instructions) -> Option<Self> {
+        let bytes = bytes.take(3)?;
 
         let w_set = Self::w_set(&bytes);
         let immediate = Self::immediate(&bytes);
@@ -277,24 +271,14 @@ impl ImmediateToRegister {
         }
     }
 
-    pub fn try_decode(bytes: &mut Vec<u8>) -> Option<Self> {
-        let len = bytes.len();
-        if len < 2 {
-            return None;
-        }
-
+    pub fn try_decode(bytes: &mut Instructions) -> Option<Self> {
         // We first check the w bit, because that will tell us how many bytes
         // this instructions will be.
-        let w_set = Self::w_set(bytes);
+        let w_set = Self::w_set(bytes.peak(2)?);
 
-        let bytes: Vec<u8> = if w_set {
-            if len < 3 {
-                return None;
-            }
-            bytes.drain(0..3).collect()
-        } else {
-            bytes.drain(0..2).collect()
-        };
+        let need = if w_set { 3 } else { 2 };
+
+        let bytes = bytes.take(need)?;
 
         let reg_field = Self::reg_field(bytes[0]);
 
@@ -387,12 +371,8 @@ impl ImmediateToMemory {
         }
     }
 
-    pub fn try_decode(bytes: &mut Vec<u8>) -> Option<Self> {
-        if bytes.len() < 2 {
-            return None;
-        }
-
-        let (mod_field, reg_field, rm_field) = Self::mod_reg_rm(bytes);
+    pub fn try_decode(bytes: &mut Instructions) -> Option<Self> {
+        let (mod_field, reg_field, rm_field) = Self::mod_reg_rm(bytes.peak(2)?);
 
         if reg_field != 0 {
             return None;
@@ -407,11 +387,8 @@ impl ImmediateToMemory {
 
         let w_set = Self::w_set(bytes[0]);
         let need = 2 + displacement as usize + if w_set { 2 } else { 1 };
-        if bytes.len() < need {
-            return None;
-        }
 
-        let bytes: Vec<u8> = bytes.drain(0..need).collect();
+        let bytes = bytes.take(need)?;
 
         Some(Self {
             destination: Address::from_fields(
@@ -488,15 +465,12 @@ impl SegToOrFromRegOrMem {
         }
     }
 
-    pub fn try_decode(bytes: &mut Vec<u8>, source: Source) -> Option<Self> {
-        if bytes.len() < 2 {
-            return None;
-        }
-
-        let (mod_field, seg_field, rm_field) = Self::mod_seg_rm(bytes);
+    pub fn try_decode(bytes: &mut Instructions, source: Source) -> Option<Self> {
+        let (mod_field, seg_field, rm_field) = Self::mod_seg_rm(bytes.peak(2)?);
         let displacement = Self::displacement_bytes(mod_field, rm_field);
+        let need = 2 + displacement as usize;
 
-        let bytes: Vec<u8> = bytes.drain(0..2 + displacement as usize).collect();
+        let bytes = bytes.take(need)?;
 
         let segment = Register::seg(seg_field)?;
         match mod_field {
@@ -527,7 +501,7 @@ impl SegToOrFromRegOrMem {
 }
 
 impl Mov {
-    pub fn try_decode(bytes: &mut Vec<u8>) -> Option<Self> {
+    pub fn try_decode(bytes: &mut Instructions) -> Option<Self> {
         if bytes.len() < 2 {
             // Minimum of 2 bytes for a Mov operation.
             return None;
@@ -586,11 +560,11 @@ mov bp, ax";
 
     #[test]
     fn prints_register_and_immediate_movs_in_asm_style() {
-        let mut bytes = vec![
+        let bytes = vec![
             0x89, 0xC8, 0xB1, 0x7F, 0xBA, 0x34, 0x12, 0xB8, 0x00, 0x80, 0x88, 0xC7,
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
+        let ops = Operations::from_bytes(bytes);
         let rendered = ops.to_string();
 
         let expected = "\
@@ -601,12 +575,11 @@ mov ax, -32768
 mov bh, al";
 
         assert_eq!(rendered, expected);
-        assert!(bytes.is_empty());
     }
 
     #[test]
     fn listing_0039_passes() {
-        let mut bytes = vec![
+        let bytes = vec![
             0x8B, 0xF3, // mov si, bx
             0x8A, 0xF0, // mov dh, al
             0xB1, 0x0C, // mov cl, 12
@@ -625,7 +598,7 @@ mov bh, al";
             0x88, 0x6E, 0x00, // mov [bp], ch
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
+        let ops = Operations::from_bytes(bytes);
         let rendered = ops.to_string();
 
         let expected = "\
@@ -647,7 +620,6 @@ mov [bp + si], cl
 mov [bp], ch";
 
         assert_eq!(rendered, expected);
-        assert!(bytes.is_empty(), "decoder should consume all bytes");
     }
 
     #[test]
@@ -680,13 +652,13 @@ mov [bp], ch";
 
     #[test]
     fn mov_signed_displacements() {
-        let mut bytes = vec![
+        let bytes = vec![
             0x8B, 0x41, 0xDB, // mov ax, [bx + di - 37]
             0x89, 0x8C, 0xD4, 0xFE, // mov [si - 300], cx
             0x8B, 0x57, 0xE0, // mov dx, [bx - 32]
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
+        let ops = Operations::from_bytes(bytes);
         let rendered = ops.to_string();
 
         let expected = "\
@@ -695,19 +667,18 @@ mov [si - 300], cx
 mov dx, [bx - 32]";
 
         assert_eq!(rendered, expected);
-        assert!(bytes.is_empty(), "decoder should consume all bytes");
     }
 
     #[test]
     fn mov_accumulator_direct_memory_forms() {
-        let mut bytes = vec![
+        let bytes = vec![
             0xA1, 0xFB, 0x09, // mov ax, [2555]
             0xA1, 0x10, 0x00, // mov ax, [16]
             0xA3, 0xFA, 0x09, // mov [2554], ax
             0xA3, 0x0F, 0x00, // mov [15], ax
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
+        let ops = Operations::from_bytes(bytes);
         let rendered = ops.to_string();
 
         let expected = "\
@@ -717,19 +688,18 @@ mov [2554], ax
 mov [15], ax";
 
         assert_eq!(rendered, expected);
-        assert!(bytes.is_empty(), "decoder should consume all bytes");
     }
 
     #[test]
     fn mov_accumulator_direct_memory_forms_byte_width() {
-        let mut bytes = vec![
+        let bytes = vec![
             0xA0, 0xFB, 0x09, // mov al, [2555]
             0xA0, 0x10, 0x00, // mov al, [16]
             0xA2, 0xFA, 0x09, // mov [2554], al
             0xA2, 0x0F, 0x00, // mov [15], al
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
+        let ops = Operations::from_bytes(bytes);
         let rendered = ops.to_string();
 
         let expected = "\
@@ -739,19 +709,18 @@ mov [2554], al
 mov [15], al";
 
         assert_eq!(rendered, expected);
-        assert!(bytes.is_empty(), "decoder should consume all bytes");
     }
 
     #[test]
     fn mov_explicit_sizes_and_direct_address() {
-        let mut bytes = vec![
+        let bytes = vec![
             0xC6, 0x03, 0x07, // mov [bp + di], byte 7
             0xC7, 0x85, 0x85, 0x03, 0x5B, 0x01, // mov [di + 901], word 347
             0x8B, 0x2E, 0x05, 0x00, // mov bp, [5]
             0x8B, 0x1E, 0x82, 0x0D, // mov bx, [3458]
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
+        let ops = Operations::from_bytes(bytes);
         let rendered = ops.to_string();
 
         let expected = "\
@@ -761,7 +730,6 @@ mov bp, [5]
 mov bx, [3458]";
 
         assert_eq!(rendered, expected);
-        assert!(bytes.is_empty(), "decoder should consume all bytes");
     }
 
     #[test]
@@ -791,7 +759,7 @@ mov [15], ax";
     fn mov_segment_reg_and_mem_prints() {
         use crate::*;
 
-        let mut bytes = vec![
+        let bytes = vec![
             0x8E, 0xDB, // mov ds, bx
             0x8C, 0xD8, // mov ax, ds
             0x8E, 0x52, 0x04, // mov ss, [bp + si + 4]
@@ -800,8 +768,7 @@ mov [15], ax";
             0x8C, 0xCB, // mov bx, cs
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
-        assert!(bytes.is_empty(), "decoder should consume all bytes");
+        let ops = Operations::from_bytes(bytes);
 
         let rendered = ops.to_string();
         let expected = "\

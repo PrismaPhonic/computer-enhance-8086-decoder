@@ -1,6 +1,9 @@
 use std::fmt;
 
-use crate::decode::{Address, Immediate, Register, RegisterOrMemory};
+use crate::{
+    collections::Instructions,
+    decode::{Address, Immediate, Register, RegisterOrMemory},
+};
 
 pub enum Arithmetic {
     Add(Add),
@@ -9,7 +12,7 @@ pub enum Arithmetic {
 }
 
 impl Arithmetic {
-    pub fn try_decode(bytes: &mut Vec<u8>) -> Option<Self> {
+    pub fn try_decode(bytes: &mut Instructions) -> Option<Self> {
         if bytes.len() < 2 {
             // Minimum of 2 bytes for a Mov operation.
             return None;
@@ -180,7 +183,7 @@ impl RegMemoryWithRegisterToEither {
 
     // Returns the displacement byte count based on the mod field, and r/m
     // field.
-    fn displacement_bytes(mod_field: u8, rm_field: u8) -> u8 {
+    fn displacement_bytes(mod_field: u8, rm_field: u8) -> usize {
         match mod_field {
             0b00 if rm_field == 0b110 => 2,
             0b10 => 2,
@@ -189,19 +192,16 @@ impl RegMemoryWithRegisterToEither {
         }
     }
 
-    pub fn try_decode(bytes: &mut Vec<u8>, opkind: AluOp) -> Option<Arithmetic> {
-        if bytes.len() < 2 {
-            return None;
-        }
-
-        let (mod_field, reg_field, rm_field) = Self::mod_reg_rm(bytes);
+    pub fn try_decode(bytes: &mut Instructions, opkind: AluOp) -> Option<Arithmetic> {
+        let (mod_field, reg_field, rm_field) = Self::mod_reg_rm(bytes.peak(2)?);
 
         let displacement = Self::displacement_bytes(mod_field, rm_field);
+        let need = 2 + displacement;
 
-        let bytes: Vec<u8> = bytes.drain(0..2 + displacement as usize).collect();
+        let bytes = bytes.take(need)?;
 
-        let w_set = Self::w_set(&bytes);
-        let d_set = Self::d_set(&bytes);
+        let w_set = Self::w_set(bytes);
+        let d_set = Self::d_set(bytes);
 
         let (register, reg_or_mem) = match mod_field {
             // Register to Register.
@@ -331,26 +331,21 @@ impl ImmediateToRegisterOrMemory {
         }
     }
 
-    pub fn try_decode(bytes: &mut Vec<u8>) -> Option<Arithmetic> {
-        if bytes.len() < 3 {
-            return None;
-        }
+    pub fn try_decode(bytes: &mut Instructions) -> Option<Arithmetic> {
+        let peak = bytes.peak(3)?;
 
-        let (mod_field, id_field, rm_field) = Self::mod_id_rm(bytes);
+        let (mod_field, id_field, rm_field) = Self::mod_id_rm(peak);
         let displacement = Self::displacement_bytes(mod_field, rm_field);
 
-        let wide = Self::w_set(bytes);
-        let uses_se = Self::s_set(bytes);
+        let wide = Self::w_set(peak);
+        let uses_se = Self::s_set(peak);
 
         // immediate length
         let imm_len = if !wide || uses_se { 1 } else { 2 };
 
         let need = 2 + displacement as usize + imm_len;
-        if bytes.len() < need {
-            return None;
-        }
 
-        let bytes: Vec<u8> = bytes.drain(0..need).collect();
+        let bytes = bytes.take(need)?;
 
         let opkind = AluOp::from_id_field(id_field)?;
 
@@ -434,18 +429,11 @@ impl ImmediateToAccumulator {
         }
     }
 
-    pub fn try_decode(bytes: &mut Vec<u8>, op_type: AluOp) -> Option<Arithmetic> {
-        if bytes.len() < 2 {
-            return None;
-        }
-
-        let w_set = Self::w_set(bytes[0]);
+    pub fn try_decode(bytes: &mut Instructions, op_type: AluOp) -> Option<Arithmetic> {
+        let w_set = Self::w_set(bytes.get(0)?);
         let need = 1 + if w_set { 2 } else { 1 };
-        if bytes.len() < need {
-            return None;
-        }
 
-        let bytes: Vec<u8> = bytes.drain(0..need).collect();
+        let bytes = bytes.take(need)?;
 
         let destination = if w_set { Register::AX } else { Register::AL };
         let immediate = Self::immediate(&bytes, w_set);
@@ -468,7 +456,7 @@ mod tests {
 
     #[test]
     fn add_reg_mem_with_register_to_either() {
-        let mut bytes = vec![
+        let bytes = vec![
             0x03, 0x18, // add bx, [bx+si]
             0x03, 0x5E, 0x00, // add bx, [bp]
             0x03, 0x5E, 0x00, // add bx, [bp + 0]
@@ -487,7 +475,7 @@ mod tests {
             0x02, 0xC4, // add al, ah
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
+        let ops = Operations::from_bytes(bytes);
         let rendered = ops.to_string();
 
         let expected = "\
@@ -509,12 +497,11 @@ add ax, bx
 add al, ah";
 
         assert_eq!(rendered, expected);
-        assert!(bytes.is_empty(), "decoder should consume all bytes");
     }
 
     #[test]
     fn arithmetic_immediate_to_reg_or_mem_via_operations() {
-        let mut bytes = vec![
+        let bytes = vec![
             // -------- ADD --------
             0x83, 0xC6, 0x02, // add si, 2
             0x83, 0xC5, 0x02, // add bp, 2
@@ -535,7 +522,7 @@ add al, ah";
             0x81, 0x3E, 0xE2, 0x12, 0x1D, 0x00, // cmp word [4834], 29  (direct addr = 0x12E2)
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
+        let ops = Operations::from_bytes(bytes);
         let rendered = ops.to_string();
 
         let expected = "\
@@ -556,12 +543,11 @@ cmp byte [bx], 34
 cmp word [4834], 29";
 
         assert_eq!(rendered, expected);
-        assert!(bytes.is_empty(), "decoder should consume all bytes");
     }
 
     #[test]
     fn sub_and_cmp_regmem_with_reg_to_either_via_operations() {
-        let mut bytes = vec![
+        let bytes = vec![
             // -------- SUB --------
             0x2B, 0x18, // sub bx, [bx+si]            (d=1,w=1)
             0x2B, 0x5E, 0x00, // sub bx, [bp]
@@ -598,7 +584,7 @@ cmp word [4834], 29";
             0x3A, 0xC4, // cmp al, ah
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
+        let ops = Operations::from_bytes(bytes);
         let rendered = ops.to_string();
 
         let expected = "\
@@ -636,17 +622,16 @@ cmp ax, bx
 cmp al, ah";
 
         assert_eq!(rendered, expected);
-        assert!(bytes.is_empty(), "decoder should consume all bytes");
     }
 
     #[test]
     fn immediate_to_accumulator_add_sub_cmp() {
-        let mut bytes = vec![
+        let bytes = vec![
             0x05, 0xE8, 0x03, 0x04, 0xE2, 0x04, 0x09, 0x2D, 0xE8, 0x03, 0x2C, 0xE2, 0x2C, 0x09,
             0x3D, 0xE8, 0x03, 0x3C, 0xE2, 0x3C, 0x09,
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
+        let ops = Operations::from_bytes(bytes);
         let rendered = ops.to_string();
 
         let expected = "\
@@ -661,6 +646,5 @@ cmp al, -30
 cmp al, 9";
 
         assert_eq!(rendered, expected);
-        assert!(bytes.is_empty(), "decoder should consume all bytes");
     }
 }

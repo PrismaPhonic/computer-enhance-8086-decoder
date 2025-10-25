@@ -4,6 +4,7 @@ use decode::{
     mov::{RegOrMemToOrFromReg, SegToOrFromRegOrMem},
 };
 
+pub mod collections;
 pub mod decode;
 
 const SF_MASK: u16 = 0b0000_0000_1000_0000;
@@ -23,6 +24,10 @@ pub struct Registers {
     ds: u16,
     ss: u16,
     es: u16,
+
+    // Instruction pointer register holds the offset address for next
+    // instruction to be executed.
+    ip: u16,
 
     // Register of flags.
     // For now only need to support ZF and SF
@@ -350,7 +355,7 @@ mod tests {
 
     #[test]
     fn mov_immediate_to_register_executes() {
-        let mut bytes = vec![
+        let bytes = vec![
             0xB8, 0x01, 0x00, // mov ax, 1
             0xBB, 0x02, 0x00, // mov bx, 2
             0xB9, 0x03, 0x00, // mov cx, 3
@@ -361,8 +366,7 @@ mod tests {
             0xBF, 0x08, 0x00, // mov di, 8
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
-        assert!(bytes.is_empty(), "decoder should consume all bytes");
+        let ops = Operations::from_bytes(bytes);
 
         let mut regs = Registers::default();
         regs.process_operations(ops);
@@ -399,7 +403,7 @@ mod tests {
 
     #[test]
     fn mov_register_to_register_executes() {
-        let mut bytes = vec![
+        let bytes = vec![
             0xB8, 0x01, 0x00, // mov ax, 1
             0xBB, 0x02, 0x00, // mov bx, 2
             0xB9, 0x03, 0x00, // mov cx, 3
@@ -414,8 +418,7 @@ mod tests {
             0x8B, 0xC7, // mov ax, di
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
-        assert!(bytes.is_empty(), "decoder should consume all bytes");
+        let ops = Operations::from_bytes(bytes);
 
         let mut regs = Registers::default();
         regs.process_operations(ops);
@@ -454,7 +457,7 @@ mod tests {
     fn mov_with_segments_and_8bit_regs_executes() {
         use crate::*;
 
-        let mut bytes = vec![
+        let bytes = vec![
             0xB8, 0x22, 0x22, // mov ax, 0x2222
             0xBB, 0x44, 0x44, // mov bx, 0x4444
             0xB9, 0x66, 0x66, // mov cx, 0x6666
@@ -477,8 +480,7 @@ mod tests {
             0x8B, 0xFA, // mov di, dx
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
-        assert!(bytes.is_empty(), "decoder should consume all bytes");
+        let ops = Operations::from_bytes(bytes);
 
         let mut regs = Registers::default();
         regs.process_operations(ops);
@@ -537,13 +539,12 @@ mod tests {
         // add bp, 1027
         // sub bp, 2026
 
-        let mut bytes = vec![
+        let bytes = vec![
             0xBB, 0x03, 0xF0, 0xB9, 0x01, 0x0F, 0x2B, 0xD9, 0xBC, 0xE6, 0x03, 0xBD, 0xE7, 0x03,
             0x3B, 0xEC, 0x81, 0xC5, 0x03, 0x04, 0x81, 0xED, 0xEA, 0x07,
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
-        assert!(bytes.is_empty(), "decoder should consume all bytes");
+        let ops = Operations::from_bytes(bytes);
 
         let mut regs = Registers::default();
         regs.process_operations(ops);
@@ -589,7 +590,7 @@ mod tests {
         //   sub al, 1         ; 0      -> ZF=1, SF=0
         //   mov al, 0x80      ; flags unchanged
         //   add al, 1         ; 0x81   -> ZF=0, SF=1  (negative in 8-bit)
-        let mut bytes = vec![
+        let bytes = vec![
             0xB8, 0x05, 0x00, // mov ax, 5
             0x2D, 0x05, 0x00, // sub ax, 5
             0x05, 0x01, 0x00, // add ax, 1
@@ -601,8 +602,7 @@ mod tests {
             0x04, 0x01, // add al, 1
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
-        assert!(bytes.is_empty(), "decoder should consume all bytes");
+        let ops = Operations::from_bytes(bytes);
 
         let mut regs = Registers::default();
 

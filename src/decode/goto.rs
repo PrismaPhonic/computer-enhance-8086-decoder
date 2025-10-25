@@ -1,4 +1,4 @@
-use crate::decode::Immediate;
+use crate::{collections::Instructions, decode::Immediate};
 use std::fmt;
 
 pub enum JumpKind {
@@ -95,13 +95,10 @@ impl Jump {
         }
     }
 
-    pub fn try_decode(bytes: &mut Vec<u8>) -> Option<Self> {
-        if bytes.len() < 2 {
-            return None;
-        }
-        let op = bytes[0];
+    pub fn try_decode(bytes: &mut Instructions) -> Option<Self> {
+        let op = bytes.get(0)?;
         let kind = Self::classify(op)?;
-        let bytes: Vec<u8> = bytes.drain(0..2).collect();
+        let bytes = bytes.take(2)?;
 
         Some(Jump {
             kind,
@@ -116,7 +113,7 @@ mod tests {
 
     #[test]
     fn jumps_disassemble_correctly() {
-        let mut bytes = vec![
+        let bytes = vec![
             0x75, 0x02, // jnz short +2
             0x75, 0xFC, // jnz short -4
             0x74, 0xFE, // je short -2
@@ -124,7 +121,7 @@ mod tests {
             0xE2, 0xFE, // loop short -2
         ];
 
-        let ops = Operations::from_bytes(&mut bytes);
+        let ops = Operations::from_bytes(bytes);
         let rendered = ops.to_string();
 
         let expected = "\
