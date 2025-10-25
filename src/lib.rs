@@ -1,9 +1,13 @@
 use decode::{
-    Immediate, Mov, Operation, Operations, RegisterOrMemory,
+    Add, Arithmetic, Cmp, Immediate, Mov, Operation, Operations, RegisterOrMemory, Sub,
+    math::{ImmediateToAccumulator, ImmediateToRegisterOrMemory, RegMemoryWithRegisterToEither},
     mov::{RegOrMemToOrFromReg, SegToOrFromRegOrMem},
 };
 
 pub mod decode;
+
+const SF_MASK: u16 = 0b0000_0000_1000_0000;
+const ZF_MASK: u16 = 0b0000_0000_0100_0000;
 
 #[derive(Default)]
 pub struct Registers {
@@ -19,6 +23,13 @@ pub struct Registers {
     ds: u16,
     ss: u16,
     es: u16,
+
+    // Register of flags.
+    // For now only need to support ZF and SF
+    // ZF - "zero flag" whether the last operation results in a zero.
+    // SF - "sign bit" whether the result was negative or positive (intepreting
+    // 2s complement)
+    flags: u16,
 }
 
 impl Registers {
@@ -57,9 +68,164 @@ impl Registers {
                 Mov::RegOrMemToOrFromReg(_) => todo!(),
                 Mov::Segment(_) => todo!(),
             },
-            Operation::Math(_) => todo!(),
+            Operation::Math(math) => match math {
+                // 1. Do basic computation
+                // 2. See if the result is zero
+                // 3. If not see if result is pos or neg.
+                //
+                // There almost certainly is a cleaner way to do this.
+                // If our "registers" were variants that held the inner type,
+                // then we could directly impl AddAssign.
+                Arithmetic::Add(add) => match *add {
+                    Add::RegOrMemWithRegToEither(RegMemoryWithRegisterToEither {
+                        register,
+                        reg_or_mem: RegisterOrMemory::Reg(other),
+                        direction,
+                    }) => {
+                        // "Source" is always right hand side - but we'll use
+                        // source to get left hand side to, as in adds it's both
+                        // a source and destination. Behaves like +=
+                        if direction {
+                            let right = self.source(other);
+                            let mut left = self.source(register);
+                            left += right;
+                            self.math_to_reg(register, left);
+                        } else {
+                            let right = self.source(register);
+                            let mut left = self.source(other);
+                            left += right;
+                            self.math_to_reg(other, left);
+                        }
+                    }
+                    Add::ImmToRegOrMem(ImmediateToRegisterOrMemory {
+                        dst: RegisterOrMemory::Reg(dst),
+                        imm,
+                        ..
+                    })
+                    | Add::ImmToAcc(ImmediateToAccumulator {
+                        destination: dst,
+                        immediate: imm,
+                    }) => {
+                        let mut left = self.source(dst);
+                        left += imm;
+                        self.math_to_reg(dst, left);
+                    }
+                    // Address variant.
+                    Add::RegOrMemWithRegToEither(_) => todo!(),
+                    // Address variant.
+                    Add::ImmToRegOrMem(_) => {
+                        todo!()
+                    }
+                },
+                Arithmetic::Sub(sub) => match *sub {
+                    Sub::RegOrMemWithRegToEither(RegMemoryWithRegisterToEither {
+                        register,
+                        reg_or_mem: RegisterOrMemory::Reg(other),
+                        direction,
+                    }) => {
+                        // "Source" is always right hand side - but we'll use
+                        // source to get left hand side to, as in adds it's both
+                        // a source and destination. Behaves like +=
+                        if direction {
+                            let right = self.source(other);
+                            let mut left = self.source(register);
+                            left -= right;
+                            self.math_to_reg(register, left);
+                        } else {
+                            let right = self.source(register);
+                            let mut left = self.source(other);
+                            left -= right;
+                            self.math_to_reg(other, left);
+                        }
+                    }
+                    Sub::ImmToRegOrMem(ImmediateToRegisterOrMemory {
+                        dst: RegisterOrMemory::Reg(dst),
+                        imm,
+                        ..
+                    })
+                    | Sub::ImmToAcc(ImmediateToAccumulator {
+                        destination: dst,
+                        immediate: imm,
+                    }) => {
+                        let mut left = self.source(dst);
+                        left -= imm;
+                        self.math_to_reg(dst, left);
+                    }
+
+                    // Address variant.
+                    Sub::RegOrMemWithRegToEither(_) => todo!(),
+                    // Address variant.
+                    Sub::ImmToRegOrMem(_) => {
+                        todo!()
+                    }
+                },
+                Arithmetic::Cmp(cmp) => match *cmp {
+                    Cmp::RegOrMemWithRegToEither(RegMemoryWithRegisterToEither {
+                        register,
+                        reg_or_mem: RegisterOrMemory::Reg(other),
+                        direction,
+                    }) => {
+                        // "Source" is always right hand side - but we'll use
+                        // source to get left hand side to, as in adds it's both
+                        // a source and destination. Behaves like +=
+                        if direction {
+                            let right = self.source(other);
+                            let mut left = self.source(register);
+                            left -= right;
+                            self.set_flags_from_math(left);
+                        } else {
+                            let right = self.source(register);
+                            let mut left = self.source(other);
+                            left -= right;
+                            self.set_flags_from_math(left);
+                        }
+                    }
+                    Cmp::ImmToRegOrMem(ImmediateToRegisterOrMemory {
+                        dst: RegisterOrMemory::Reg(dst),
+                        imm,
+                        ..
+                    })
+                    | Cmp::ImmToAcc(ImmediateToAccumulator {
+                        destination: dst,
+                        immediate: imm,
+                    }) => {
+                        let mut left = self.source(dst);
+                        left -= imm;
+                        self.set_flags_from_math(left);
+                    }
+
+                    // Address variant.
+                    Cmp::RegOrMemWithRegToEither(_) => todo!(),
+                    // Address variant.
+                    Cmp::ImmToRegOrMem(_) => {
+                        todo!()
+                    }
+                },
+            },
             Operation::Jump(_) => todo!(),
         }
+    }
+
+    fn set_flags_from_math(&mut self, math_output: decode::Immediate) {
+        if math_output.is_zero() {
+            // Zero means the MSB is zero which means SF should be not set.
+            // In a weird way we can think of zero as being "positive" in this
+            // sense.
+            self.flags &= !SF_MASK;
+            self.flags |= ZF_MASK;
+        } else if math_output.is_negative() {
+            self.flags |= SF_MASK;
+            self.flags &= !ZF_MASK;
+        } else {
+            self.flags &= !SF_MASK;
+            self.flags &= !ZF_MASK;
+        }
+    }
+
+    // Like immediate to reg, but for math operations. Sets flags automatically.
+    fn math_to_reg(&mut self, reg: decode::Register, math_output: decode::Immediate) {
+        self.set_flags_from_math(math_output);
+        self.immediate_to_reg(reg, math_output);
     }
 
     fn immediate_to_reg(&mut self, reg: decode::Register, imm: decode::Immediate) {
@@ -353,5 +519,167 @@ mod tests {
         assert_eq!(regs.bp, 0x3344);
         assert_eq!(regs.si, 0x6677);
         assert_eq!(regs.di, 0x7788);
+    }
+
+    #[test]
+    fn math_reg_only_executes_and_sets_flags() {
+        use crate::*;
+
+        // Program:
+        // mov bx, -4093
+        // mov cx, 3841
+        // sub bx, cx
+        //
+        // mov sp, 998
+        // mov bp, 999
+        // cmp bp, sp
+        //
+        // add bp, 1027
+        // sub bp, 2026
+
+        let mut bytes = vec![
+            0xBB, 0x03, 0xF0, 0xB9, 0x01, 0x0F, 0x2B, 0xD9, 0xBC, 0xE6, 0x03, 0xBD, 0xE7, 0x03,
+            0x3B, 0xEC, 0x81, 0xC5, 0x03, 0x04, 0x81, 0xED, 0xEA, 0x07,
+        ];
+
+        let ops = Operations::from_bytes(&mut bytes);
+        assert!(bytes.is_empty(), "decoder should consume all bytes");
+
+        let mut regs = Registers::default();
+        regs.process_operations(ops);
+
+        assert_eq!(regs.bx, 0xE102);
+        assert_eq!(regs.cx, 0x0F01);
+
+        assert_eq!(regs.sp, 0x03E6);
+        assert_eq!(regs.bp, 0x0000);
+
+        assert_eq!(regs.flags & ZF_MASK, ZF_MASK, "ZF should be set");
+        assert_eq!(regs.flags & SF_MASK, 0, "SF should be clear");
+    }
+
+    #[test]
+    fn listing_0046_passes_from_file() {
+        let ops = Operations::try_from_file("listing_0046_add_sub_cmp")
+            .expect("This file should exist in the repo and parse");
+
+        let mut regs = Registers::default();
+        regs.process_operations(ops);
+
+        assert_eq!(regs.bx, 0xE102);
+        assert_eq!(regs.cx, 0x0F01);
+
+        assert_eq!(regs.sp, 0x03E6);
+        assert_eq!(regs.bp, 0x0000);
+
+        assert_eq!(regs.flags & ZF_MASK, ZF_MASK, "ZF should be set");
+        assert_eq!(regs.flags & SF_MASK, 0, "SF should be clear");
+    }
+    #[test]
+    fn flags_sf_zf_transitions_word_and_byte() {
+        use crate::*;
+
+        // Program:
+        //   mov ax, 5         ; flags unchanged
+        //   sub ax, 5         ; 0      -> ZF=1, SF=0
+        //   add ax, 1         ; +1     -> ZF=0, SF=0
+        //   sub ax, 2         ; -1     -> ZF=0, SF=1
+        //   add ax, 1         ; 0      -> ZF=1, SF=0  (this catches stale SF if not cleared on zero)
+        //   mov al, 1         ; flags unchanged
+        //   sub al, 1         ; 0      -> ZF=1, SF=0
+        //   mov al, 0x80      ; flags unchanged
+        //   add al, 1         ; 0x81   -> ZF=0, SF=1  (negative in 8-bit)
+        let mut bytes = vec![
+            0xB8, 0x05, 0x00, // mov ax, 5
+            0x2D, 0x05, 0x00, // sub ax, 5
+            0x05, 0x01, 0x00, // add ax, 1
+            0x2D, 0x02, 0x00, // sub ax, 2
+            0x05, 0x01, 0x00, // add ax, 1
+            0xB0, 0x01, // mov al, 1
+            0x2C, 0x01, // sub al, 1
+            0xB0, 0x80, // mov al, 0x80
+            0x04, 0x01, // add al, 1
+        ];
+
+        let ops = Operations::from_bytes(&mut bytes);
+        assert!(bytes.is_empty(), "decoder should consume all bytes");
+
+        let mut regs = Registers::default();
+
+        // Process step-by-step so we can assert flags along the way.
+        let prog = ops.as_ref();
+        for (i, op) in prog.iter().enumerate() {
+            regs.process_operation(op);
+
+            match i {
+                // After: sub ax, 5  -> 0
+                1 => {
+                    assert_ne!(regs.flags & ZF_MASK, 0, "ZF should be set after ax-5 == 0");
+                    assert_eq!(
+                        regs.flags & SF_MASK,
+                        0,
+                        "SF should be clear when result is zero (word)"
+                    );
+                }
+                // After: add ax, 1  -> +1
+                2 => {
+                    assert_eq!(
+                        regs.flags & ZF_MASK,
+                        0,
+                        "ZF should clear on nonzero result (word)"
+                    );
+                    assert_eq!(
+                        regs.flags & SF_MASK,
+                        0,
+                        "SF should be clear for positive (word)"
+                    );
+                }
+                // After: sub ax, 2  -> -1
+                3 => {
+                    assert_eq!(
+                        regs.flags & ZF_MASK,
+                        0,
+                        "ZF should be clear on nonzero result (word)"
+                    );
+                    assert_ne!(regs.flags & SF_MASK, 0, "SF should set for negative (word)");
+                }
+                // After: add ax, 1  -> 0
+                4 => {
+                    assert_ne!(
+                        regs.flags & ZF_MASK,
+                        0,
+                        "ZF should be set after result==0 (word)"
+                    );
+                    assert_eq!(
+                        regs.flags & SF_MASK,
+                        0,
+                        "SF must be cleared on zero (catch stale SF bugs)"
+                    );
+                }
+                // After: sub al, 1  -> 0
+                6 => {
+                    assert_ne!(
+                        regs.flags & ZF_MASK,
+                        0,
+                        "ZF should be set after AL-1 == 0 (byte)"
+                    );
+                    assert_eq!(
+                        regs.flags & SF_MASK,
+                        0,
+                        "SF should be clear when result is zero (byte)"
+                    );
+                }
+                // After: add al, 1  -> 0x81 (negative in 8-bit)
+                8 => {
+                    assert_eq!(
+                        regs.flags & ZF_MASK,
+                        0,
+                        "ZF should clear on nonzero result (byte)"
+                    );
+                    assert_ne!(regs.flags & SF_MASK, 0, "SF should set for negative (byte)");
+                }
+                _ => {}
+            }
+        }
     }
 }

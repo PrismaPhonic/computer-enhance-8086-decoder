@@ -57,18 +57,21 @@ impl From<Cmp> for Arithmetic {
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum Add {
     RegOrMemWithRegToEither(RegMemoryWithRegisterToEither),
     ImmToRegOrMem(ImmediateToRegisterOrMemory),
     ImmToAcc(ImmediateToAccumulator),
 }
 
+#[derive(Clone, Copy)]
 pub enum Sub {
     RegOrMemWithRegToEither(RegMemoryWithRegisterToEither),
     ImmToRegOrMem(ImmediateToRegisterOrMemory),
     ImmToAcc(ImmediateToAccumulator),
 }
 
+#[derive(Clone, Copy)]
 pub enum Cmp {
     RegOrMemWithRegToEither(RegMemoryWithRegisterToEither),
     ImmToRegOrMem(ImmediateToRegisterOrMemory),
@@ -112,11 +115,12 @@ impl From<RegMemoryWithRegisterToEither> for Add {
 }
 
 // One half has to be a register, and the other half can be either.
+#[derive(Clone, Copy)]
 pub struct RegMemoryWithRegisterToEither {
-    register: Register,
-    reg_or_mem: RegisterOrMemory,
+    pub register: Register,
+    pub reg_or_mem: RegisterOrMemory,
     // If true, then memory is the source.
-    direction: bool,
+    pub direction: bool,
 }
 
 impl fmt::Display for RegMemoryWithRegisterToEither {
@@ -255,6 +259,7 @@ impl AluOp {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct ImmediateToRegisterOrMemory {
     pub dst: RegisterOrMemory,
     pub imm: Immediate,
@@ -391,9 +396,10 @@ impl fmt::Display for ImmediateToRegisterOrMemory {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct ImmediateToAccumulator {
-    destination: Register,
-    immediate: Immediate,
+    pub destination: Register,
+    pub immediate: Immediate,
 }
 
 impl fmt::Display for ImmediateToAccumulator {

@@ -5,7 +5,7 @@ pub mod math;
 pub mod mov;
 
 pub use goto::Jump;
-pub use math::Arithmetic;
+pub use math::{Add, Arithmetic, Cmp, Sub};
 pub use mov::Mov;
 
 use math::{ImmediateToAccumulator, RegMemoryWithRegisterToEither};
@@ -316,7 +316,7 @@ impl fmt::Display for Operation {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Immediate {
     Half(i8),
     Full(i16),
@@ -345,6 +345,13 @@ impl Immediate {
         }
     }
 
+    pub fn is_negative(&self) -> bool {
+        match *self {
+            Immediate::Half(v) => v < 0,
+            Immediate::Full(v) => v < 0,
+        }
+    }
+
     /// Returns (is_negative, magnitude_as_u16)
     pub fn sign_and_mag(&self) -> (bool, u16) {
         match *self {
@@ -359,6 +366,63 @@ impl fmt::Display for Immediate {
         match self {
             Immediate::Half(num) => num.fmt(f),
             Immediate::Full(num) => num.fmt(f),
+        }
+    }
+}
+
+impl std::ops::Add for Immediate {
+    type Output = Immediate;
+
+    // TODO: Deal with wrapping appropriately.
+    fn add(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Immediate::Half(left), Immediate::Half(right)) => Immediate::Half(left.add(right)),
+            (Immediate::Full(left), Immediate::Full(right)) => Immediate::Full(left.add(right)),
+
+            _ => unreachable!("This should panic - be design we should not be mixing immediates"),
+        }
+    }
+}
+
+impl std::ops::AddAssign for Immediate {
+    fn add_assign(&mut self, rhs: Self) {
+        match (self, rhs) {
+            (Immediate::Half(left), Immediate::Half(right)) => {
+                left.add_assign(right);
+            }
+            (Immediate::Full(left), Immediate::Full(right)) => {
+                left.add_assign(right);
+            }
+
+            _ => unreachable!("This should panic - be design we should not be mixing immediates"),
+        }
+    }
+}
+
+impl std::ops::Sub for Immediate {
+    type Output = Immediate;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Immediate::Half(left), Immediate::Half(right)) => Immediate::Half(left.sub(right)),
+            (Immediate::Full(left), Immediate::Full(right)) => Immediate::Full(left.sub(right)),
+
+            _ => unreachable!("This should panic - be design we should not be mixing immediates"),
+        }
+    }
+}
+
+impl std::ops::SubAssign for Immediate {
+    fn sub_assign(&mut self, rhs: Self) {
+        match (self, rhs) {
+            (Immediate::Half(left), Immediate::Half(right)) => {
+                left.sub_assign(right);
+            }
+            (Immediate::Full(left), Immediate::Full(right)) => {
+                left.sub_assign(right);
+            }
+
+            _ => unreachable!("This should panic - be design we should not be mixing immediates"),
         }
     }
 }
