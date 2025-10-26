@@ -1,7 +1,7 @@
 use collections::Instructions;
 use decode::{
     Add, Arithmetic, Cmp, Immediate, Mov, Operation, Operations, RegisterOrMemory, Sub,
-    goto::Jump,
+    goto::{Jump, JumpKind},
     math::{ImmediateToAccumulator, ImmediateToRegisterOrMemory, RegMemoryWithRegisterToEither},
     mov::{
         AccToOrFromMemory, ImmediateToMemory, ImmediateToRegister, RegOrMemToOrFromReg,
@@ -186,7 +186,7 @@ impl Registers {
 pub struct Cpu {
     registers: Registers,
     instructions: Instructions,
-    memory: Vec<u8>,
+    pub memory: Vec<u8>,
 }
 
 impl Cpu {
@@ -618,13 +618,26 @@ impl Cpu {
                 },
             },
             Operation::Jump(jmp) => {
-                // TODO: This could technically reverse prior to the instruction
-                // stream, but in practice no assembler would write this kind of
-                // a jump, so we will naively not deal with it.
-                if jmp.should_jump(self.registers.flags) {
-                    let next_ip = (self.registers.ip as i16 + i16::from(jmp.disp)) as u16;
-                    self.registers.ip = next_ip;
-                    self.instructions.set_head(next_ip as usize);
+                match jmp.kind {
+                    JumpKind::Jnz => {
+                        let zero = self.registers.flags & ZF_MASK == ZF_MASK;
+                        if !zero {
+                            let next_ip = (self.registers.ip as i16 + i16::from(jmp.disp)) as u16;
+                            self.registers.ip = next_ip;
+                            self.instructions.set_head(next_ip as usize);
+                        }
+                    }
+                    // Can't determine from flags_register alone, need cx.
+                    JumpKind::Loop => {
+                        self.registers.cx -= 1;
+                        if self.registers.cx != 0 {
+                            let next_ip = (self.registers.ip as i16 + i16::from(jmp.disp)) as u16;
+                            self.registers.ip = next_ip;
+                            self.instructions.set_head(next_ip as usize);
+                        }
+                    }
+
+                    _ => todo!("Implement rest of jumps"),
                 }
             }
         }
@@ -868,8 +881,6 @@ mod tests {
         assert_eq!(cpu.registers.ip, 14);
 
         // Flags: result (-800) is negative, not zero.
-        const SF_MASK: u16 = 0b0000_0000_1000_0000;
-        const ZF_MASK: u16 = 0b0000_0000_0100_0000;
         assert_ne!(cpu.registers.flags & SF_MASK, 0, "SF should be set");
         assert_eq!(cpu.registers.flags & ZF_MASK, 0, "ZF should be clear");
     }
@@ -887,8 +898,6 @@ mod tests {
         assert_eq!(cpu.registers.ip, 14);
 
         // Flags: result (-800) is negative, not zero.
-        const SF_MASK: u16 = 0b0000_0000_1000_0000;
-        const ZF_MASK: u16 = 0b0000_0000_0100_0000;
         assert_ne!(cpu.registers.flags & SF_MASK, 0, "SF should be set");
         assert_eq!(cpu.registers.flags & ZF_MASK, 0, "ZF should be clear");
     }
@@ -922,8 +931,6 @@ mod tests {
         assert_eq!(cpu.registers.ip, 14);
 
         // Flags after final sub (cx=0): ZF=1, SF=0
-        const SF_MASK: u16 = 0b0000_0000_1000_0000;
-        const ZF_MASK: u16 = 0b0000_0000_0100_0000;
         assert_ne!(cpu.registers.flags & ZF_MASK, 0, "ZF should be set");
         assert_eq!(cpu.registers.flags & SF_MASK, 0, "SF should be clear");
     }
@@ -941,8 +948,6 @@ mod tests {
         assert_eq!(cpu.registers.ip, 14);
 
         // Flags after final sub (cx=0): ZF=1, SF=0
-        const SF_MASK: u16 = 0b0000_0000_1000_0000;
-        const ZF_MASK: u16 = 0b0000_0000_0100_0000;
         assert_ne!(cpu.registers.flags & ZF_MASK, 0, "ZF should be set");
         assert_eq!(cpu.registers.flags & SF_MASK, 0, "SF should be clear");
     }
@@ -1032,8 +1037,6 @@ mod tests {
         assert_eq!(cpu.registers.bp, 1000);
         assert_eq!(cpu.registers.ip, 35);
 
-        const ZF_MASK: u16 = 0b0000_0000_0100_0000;
-        const SF_MASK: u16 = 0b0000_0000_1000_0000;
         assert_ne!(cpu.registers.flags & ZF_MASK, 0); // ZF set
         assert_eq!(cpu.registers.flags & SF_MASK, 0); // SF clear
     }
@@ -1051,8 +1054,6 @@ mod tests {
         assert_eq!(cpu.registers.bp, 1000);
         assert_eq!(cpu.registers.ip, 35);
 
-        const ZF_MASK: u16 = 0b0000_0000_0100_0000;
-        const SF_MASK: u16 = 0b0000_0000_1000_0000;
         assert_ne!(cpu.registers.flags & ZF_MASK, 0); // ZF set
         assert_eq!(cpu.registers.flags & SF_MASK, 0); // SF clear
     }
@@ -1095,8 +1096,6 @@ mod tests {
         assert_eq!(cpu.registers.bp, 998);
         assert_eq!(cpu.registers.ip, 33);
 
-        const ZF_MASK: u16 = 0b0000_0000_0100_0000;
-        const SF_MASK: u16 = 0b0000_0000_1000_0000;
         assert_ne!(cpu.registers.flags & ZF_MASK, 0); // ZF set
         assert_eq!(cpu.registers.flags & SF_MASK, 0); // SF clear
     }
@@ -1113,9 +1112,144 @@ mod tests {
         assert_eq!(cpu.registers.bp, 998);
         assert_eq!(cpu.registers.ip, 33);
 
-        const ZF_MASK: u16 = 0b0000_0000_0100_0000;
-        const SF_MASK: u16 = 0b0000_0000_1000_0000;
         assert_ne!(cpu.registers.flags & ZF_MASK, 0); // ZF set
         assert_eq!(cpu.registers.flags & SF_MASK, 0); // SF clear
+    }
+
+    #[test]
+    fn image_fill_like_nested_loops() {
+        // Program:
+        // mov bp, 64*4
+        // mov dx, 0
+        // y_loop_start:
+        //   mov cx, 0
+        // x_loop_start:
+        //   mov word [bp + 0], cx ; R
+        //   mov word [bp + 2], dx ; B
+        //   mov byte [bp + 3], 255 ; A
+        //   add bp, 4
+        //   add cx, 1
+        //   cmp cx, 64
+        //   jnz x_loop_start
+        // add dx, 1
+        // cmp dx, 64
+        // jnz y_loop_start
+
+        let bytes = vec![
+            0xBD, 0x00, 0x01, 0xBA, 0x00, 0x00, 0xB9, 0x00, 0x00, 0x89, 0x4E, 0x00, 0x89, 0x56,
+            0x02, 0xC6, 0x46, 0x03, 0xFF, 0x83, 0xC5, 0x04, 0x83, 0xC1, 0x01, 0x83, 0xF9, 0x40,
+            0x75, 0xEB, 0x83, 0xC2, 0x01, 0x83, 0xFA, 0x40, 0x75, 0xE0,
+        ];
+
+        let mut cpu = Cpu::from_instructions(bytes);
+
+        cpu.process_instructions();
+
+        assert_eq!(cpu.registers.cx, 64);
+        assert_eq!(cpu.registers.dx, 64);
+        assert_eq!(cpu.registers.bp, 16640);
+        assert_eq!(cpu.registers.ip, 38);
+
+        assert_ne!(cpu.registers.flags & ZF_MASK, 0); // Z
+        assert_eq!(cpu.registers.flags & SF_MASK, 0); // S clear
+    }
+
+    #[test]
+    fn listing_0054_passes_from_file() {
+        let mut cpu = Cpu::try_from_file("listing_0054_draw_rectangle")
+            .expect("This file should exist in the repo and parse");
+        cpu.process_instructions();
+
+        assert_eq!(cpu.registers.cx, 64);
+        assert_eq!(cpu.registers.dx, 64);
+        assert_eq!(cpu.registers.bp, 16640);
+        assert_eq!(cpu.registers.ip, 38);
+
+        assert_ne!(cpu.registers.flags & ZF_MASK, 0); // Z
+        assert_eq!(cpu.registers.flags & SF_MASK, 0); // S clear
+    }
+
+    #[test]
+    fn image_fill_with_loops_and_outline() {
+        // Program:
+        // mov bp, 64*4
+        // mov dx, 64
+        // y_loop_start:
+        //   mov cx, 64
+        // x_loop_start:
+        //   mov byte [bp + 0], cl
+        //   mov byte [bp + 1], 0
+        //   mov byte [bp + 2], dl
+        //   mov byte [bp + 3], 255
+        //   add bp, 4
+        //   loop x_loop_start
+        //   sub dx, 1
+        //   jnz y_loop_start
+        //
+        // mov bp, 64*4 + 4*64 + 4
+        // mov bx, bp
+        // mov cx, 62
+        // outline_loop_start:
+        //   mov byte [bp + 1], 255
+        //   mov byte [0x3D01], 255
+        //   mov byte [bx + 1], 255
+        //   mov byte [bx + (61*4 + 1)], 255
+        //   add bp, 4
+        //   add bx, 4*64
+        //   loop outline_loop_start
+
+        let bytes = vec![
+            0xBD, 0x00, 0x01, // mov bp, 256
+            0xBA, 0x40, 0x00, // mov dx, 64
+            0xB9, 0x40, 0x00, // mov cx, 64
+            0x88, 0x4E, 0x00, // mov [bp+0], cl
+            0xC6, 0x46, 0x01, 0x00, // mov byte [bp+1], 0
+            0x88, 0x56, 0x02, // mov [bp+2], dl
+            0xC6, 0x46, 0x03, 0xFF, // mov byte [bp+3], 255
+            0x83, 0xC5, 0x04, // add bp, 4
+            0xE2, 0xED, // loop x_loop_start
+            0x83, 0xEA, 0x01, // sub dx, 1
+            0x75, 0xE5, // jnz y_loop_start
+            0xBD, 0x04, 0x02, // mov bp, 516
+            0x8B, 0xDD, // mov bx, bp
+            0xB9, 0x3E, 0x00, // mov cx, 62
+            0xC6, 0x46, 0x01, 0xFF, // mov byte [bp+1], 255
+            0xC6, 0x06, 0x01, 0x3D, 0xFF, // mov byte [0x3D01], 255
+            0xC6, 0x47, 0x01, 0xFF, // mov byte [bx+1], 255
+            0xC6, 0x87, 0xF5, 0x00, 0xFF, // mov byte [bx+245], 255
+            0x83, 0xC5, 0x04, // add bp, 4
+            0x81, 0xC3, 0x00, 0x01, // add bx, 256
+            0xE2, 0xE5, // loop outline_loop_start
+        ];
+
+        let path = std::path::PathBuf::from("listing_0055_challenge_rectangle");
+        let absolute = path.canonicalize().expect("Failed to create absolute path");
+        let bytes_from_file = fs::read(absolute).unwrap();
+
+        for i in 0..bytes_from_file.len() {
+            let expected = bytes_from_file[i];
+            let got = bytes[i];
+            if got != expected {
+                println!("Index: {i}; Expected {:x}; Got: {:x}", expected, got);
+            }
+        }
+
+        let mut cpu = Cpu::from_instructions(bytes);
+        cpu.process_instructions();
+
+        assert_eq!(cpu.registers.bx, 16388);
+        assert_eq!(cpu.registers.bp, 764);
+        assert_eq!(cpu.registers.ip, 68);
+    }
+
+    #[test]
+    fn listing_0055_passes_from_file() {
+        let mut cpu = Cpu::try_from_file("listing_0055_challenge_rectangle")
+            .expect("This file should exist in the repo and parse");
+        cpu.process_instructions();
+
+        assert_eq!(cpu.registers.ip, 68);
+        assert_eq!(cpu.registers.bp, 764);
+        assert_eq!(cpu.registers.bx, 16388);
     }
 }

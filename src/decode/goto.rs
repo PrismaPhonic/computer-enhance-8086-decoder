@@ -53,7 +53,7 @@ impl fmt::Display for JumpKind {
 }
 
 pub struct Jump {
-    kind: JumpKind,
+    pub(crate) kind: JumpKind,
     // Destination in bytes ahead or behind where we are currently.
     // Will always be 8 bit (Immediate::Half).
     pub(crate) disp: Immediate,
@@ -104,36 +104,6 @@ impl Jump {
             kind,
             disp: Immediate::from_lo(bytes[1]),
         })
-    }
-
-    pub fn should_jump(&self, flags_register: u16) -> bool {
-        match self.kind {
-            JumpKind::Jnz => {
-                let zero = flags_register & ZF_MASK == ZF_MASK;
-                !zero
-            }
-
-            JumpKind::Je => todo!(),
-            JumpKind::Jp => todo!(),
-            JumpKind::Jb => todo!(),
-            JumpKind::Loopnz => todo!(),
-
-            JumpKind::Jl => todo!(),
-            JumpKind::Jle => todo!(),
-            JumpKind::Jbe => todo!(),
-            JumpKind::Jo => todo!(),
-            JumpKind::Js => todo!(),
-            JumpKind::Jnl => todo!(),
-            JumpKind::Jg => todo!(),
-            JumpKind::Jnb => todo!(),
-            JumpKind::Ja => todo!(),
-            JumpKind::Jnp => todo!(),
-            JumpKind::Jno => todo!(),
-            JumpKind::Jns => todo!(),
-            JumpKind::Loop => todo!(),
-            JumpKind::Loopz => todo!(),
-            JumpKind::Jcxz => todo!(),
-        }
     }
 }
 
