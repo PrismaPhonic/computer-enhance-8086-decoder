@@ -1,5 +1,4 @@
 use collections::Instructions;
-use decode::math;
 use decode::{
     Add, Arithmetic, Cmp, Immediate, Mov, Operation, Operations, RegisterOrMemory, Sub,
     goto::Jump,
@@ -9,6 +8,7 @@ use decode::{
         SegToOrFromRegOrMem,
     },
 };
+use decode::{Address, math};
 use std::fs;
 
 pub mod collections;
@@ -186,6 +186,7 @@ impl Registers {
 pub struct Cpu {
     registers: Registers,
     instructions: Instructions,
+    memory: Vec<u8>,
 }
 
 impl Cpu {
@@ -193,6 +194,10 @@ impl Cpu {
         Self {
             registers: Registers::default(),
             instructions: instructions.into(),
+            // Pre-allocate memory that is sized for the max indexing we can do
+            // with a u16.
+            // We ignore simulating segment registers for now.
+            memory: vec![0u8; 1 << 16],
         }
     }
 
@@ -270,16 +275,95 @@ impl Cpu {
         }
     }
 
+    #[inline(always)]
+    fn address_calc(&self, address: Address) -> usize {
+        match address {
+            Address::BxSi(imm) => {
+                ((self.registers.bx + self.registers.si) as i16
+                    + imm.map(|m| i16::from(m)).unwrap_or(0)) as usize
+            }
+            Address::BxDi(imm) => {
+                ((self.registers.bx + self.registers.di) as i16
+                    + imm.map(|m| i16::from(m)).unwrap_or(0)) as usize
+            }
+            Address::BpSi(imm) => {
+                ((self.registers.bp + self.registers.si) as i16
+                    + imm.map(|m| i16::from(m)).unwrap_or(0)) as usize
+            }
+            Address::BpDi(imm) => {
+                ((self.registers.bp + self.registers.di) as i16
+                    + imm.map(|m| i16::from(m)).unwrap_or(0)) as usize
+            }
+            Address::Si(imm) => {
+                (self.registers.si as i16 + imm.map(|m| i16::from(m)).unwrap_or(0)) as usize
+            }
+            Address::Di(imm) => {
+                (self.registers.di as i16 + imm.map(|m| i16::from(m)).unwrap_or(0)) as usize
+            }
+            Address::Bx(imm) => {
+                (self.registers.bx as i16 + imm.map(|m| i16::from(m)).unwrap_or(0)) as usize
+            }
+
+            Address::Bp(imm) => (self.registers.bp as i16 + i16::from(imm)) as usize,
+            Address::DirectAddress(imm) => imm.into(),
+        }
+    }
+
+    fn from_memory_address(&self, address: Address, wide: bool) -> Immediate {
+        self.from_memory(self.address_calc(address), wide)
+    }
+
+    fn to_memory_address(&mut self, address: Address, imm: Immediate) {
+        let idx = self.address_calc(address);
+        match imm {
+            Immediate::Half(v) => {
+                self.memory[idx] = v as u8;
+            }
+            Immediate::Full(v) => {
+                let bytes = v.to_le_bytes();
+                self.memory[idx] = bytes[0];
+                self.memory[idx + 1] = bytes[1];
+            }
+        }
+    }
+
+    fn from_memory(&self, idx: usize, wide: bool) -> Immediate {
+        if wide {
+            Immediate::from_full(self.memory[idx], self.memory[idx + 1])
+        } else {
+            Immediate::from_lo(self.memory[idx])
+        }
+    }
+
+    fn math_to_mem(&mut self, mem: Address, math_output: decode::Immediate) {
+        self.registers.set_flags_from_math(math_output);
+        self.to_memory_address(mem, math_output);
+    }
+
     fn process_operation(&mut self, op: &Operation) {
         match op {
-            Operation::Mov(mov) => match mov {
+            Operation::Mov(mov) => match *mov {
                 Mov::RegOrMemToOrFromReg(RegOrMemToOrFromReg {
                     source: RegisterOrMemory::Reg(source),
                     destination: RegisterOrMemory::Reg(destination),
                 }) => {
                     self.registers
-                        .immediate_to_reg(*destination, self.registers.source(*source));
+                        .immediate_to_reg(destination, self.registers.source(source));
                 }
+                Mov::RegOrMemToOrFromReg(RegOrMemToOrFromReg {
+                    source: RegisterOrMemory::Mem(source),
+                    destination: RegisterOrMemory::Reg(destination),
+                }) => self.registers.immediate_to_reg(
+                    destination,
+                    self.from_memory_address(source, destination.is_wide()),
+                ),
+                Mov::RegOrMemToOrFromReg(RegOrMemToOrFromReg {
+                    source: RegisterOrMemory::Reg(source),
+                    destination: RegisterOrMemory::Mem(destination),
+                }) => {
+                    self.to_memory_address(destination, self.registers.source(source));
+                }
+                Mov::RegOrMemToOrFromReg(_) => unreachable!("Memory to Memory is impossible"),
                 Mov::Segment(SegToOrFromRegOrMem {
                     segment,
                     other: RegisterOrMemory::Reg(other),
@@ -287,21 +371,50 @@ impl Cpu {
                 }) => match source {
                     decode::mov::Source::Segment => {
                         self.registers
-                            .immediate_to_reg(*other, self.registers.source(*segment));
+                            .immediate_to_reg(other, self.registers.source(segment));
                     }
                     decode::mov::Source::RegisterOrMemory => {
                         self.registers
-                            .immediate_to_reg(*segment, self.registers.source(*other));
+                            .immediate_to_reg(segment, self.registers.source(other));
+                    }
+                },
+                Mov::Segment(SegToOrFromRegOrMem {
+                    segment,
+                    other: RegisterOrMemory::Mem(other),
+                    source,
+                }) => match source {
+                    decode::mov::Source::Segment => {
+                        self.to_memory_address(other, self.registers.source(segment));
+                    }
+                    decode::mov::Source::RegisterOrMemory => {
+                        self.registers
+                            .immediate_to_reg(segment, self.from_memory_address(other, true));
                     }
                 },
                 Mov::ImmediateToRegister(imm_to_reg) => {
                     self.registers
                         .immediate_to_reg(imm_to_reg.register, imm_to_reg.immediate);
                 }
-                Mov::ImmediateToMemory(_) => todo!(),
-                Mov::AccToOrFromMem(_) => todo!(),
-                Mov::RegOrMemToOrFromReg(_) => todo!(),
-                Mov::Segment(_) => todo!(),
+                Mov::ImmediateToMemory(ImmediateToMemory {
+                    destination,
+                    immediate,
+                }) => {
+                    self.to_memory_address(destination, immediate);
+                }
+                Mov::AccToOrFromMem(AccToOrFromMemory {
+                    source: RegisterOrMemory::Reg(acc),
+                    destination: RegisterOrMemory::Mem(dest),
+                }) => {
+                    self.to_memory_address(dest, self.registers.source(acc));
+                }
+                Mov::AccToOrFromMem(AccToOrFromMemory {
+                    source: RegisterOrMemory::Mem(source),
+                    destination: RegisterOrMemory::Reg(acc),
+                }) => {
+                    self.registers
+                        .immediate_to_reg(acc, self.from_memory_address(source, acc.is_wide()));
+                }
+                Mov::AccToOrFromMem(_) => unreachable!("no mem to mem for acc"),
             },
             Operation::Math(math) => match math {
                 // 1. Do basic computation
@@ -332,6 +445,26 @@ impl Cpu {
                             self.registers.math_to_reg(other, left);
                         }
                     }
+                    Add::RegOrMemWithRegToEither(RegMemoryWithRegisterToEither {
+                        register,
+                        reg_or_mem: RegisterOrMemory::Mem(other),
+                        direction,
+                    }) => {
+                        // "Source" is always right hand side - but we'll use
+                        // source to get left hand side to, as in adds it's both
+                        // a source and destination. Behaves like +=
+                        if direction {
+                            let right = self.from_memory_address(other, register.is_wide());
+                            let mut left = self.registers.source(register);
+                            left += right;
+                            self.registers.math_to_reg(register, left);
+                        } else {
+                            let right = self.registers.source(register);
+                            let mut left = self.from_memory_address(other, register.is_wide());
+                            left += right;
+                            self.math_to_mem(other, left);
+                        }
+                    }
                     Add::ImmToRegOrMem(ImmediateToRegisterOrMemory {
                         dst: RegisterOrMemory::Reg(dst),
                         imm,
@@ -345,11 +478,14 @@ impl Cpu {
                         left += imm;
                         self.registers.math_to_reg(dst, left);
                     }
-                    // Address variant.
-                    Add::RegOrMemWithRegToEither(_) => todo!(),
-                    // Address variant.
-                    Add::ImmToRegOrMem(_) => {
-                        todo!()
+                    Add::ImmToRegOrMem(ImmediateToRegisterOrMemory {
+                        dst: RegisterOrMemory::Mem(dst),
+                        imm,
+                        ..
+                    }) => {
+                        let mut left = self.from_memory_address(dst, imm.is_wide());
+                        left += imm;
+                        self.math_to_mem(dst, left);
                     }
                 },
                 Arithmetic::Sub(sub) => match *sub {
@@ -373,6 +509,26 @@ impl Cpu {
                             self.registers.math_to_reg(other, left);
                         }
                     }
+                    Sub::RegOrMemWithRegToEither(RegMemoryWithRegisterToEither {
+                        register,
+                        reg_or_mem: RegisterOrMemory::Mem(other),
+                        direction,
+                    }) => {
+                        // "Source" is always right hand side - but we'll use
+                        // source to get left hand side to, as in adds it's both
+                        // a source and destination. Behaves like +=
+                        if direction {
+                            let right = self.from_memory_address(other, register.is_wide());
+                            let mut left = self.registers.source(register);
+                            left -= right;
+                            self.registers.math_to_reg(register, left);
+                        } else {
+                            let right = self.registers.source(register);
+                            let mut left = self.from_memory_address(other, register.is_wide());
+                            left -= right;
+                            self.math_to_mem(other, left);
+                        }
+                    }
                     Sub::ImmToRegOrMem(ImmediateToRegisterOrMemory {
                         dst: RegisterOrMemory::Reg(dst),
                         imm,
@@ -386,12 +542,14 @@ impl Cpu {
                         left -= imm;
                         self.registers.math_to_reg(dst, left);
                     }
-
-                    // Address variant.
-                    Sub::RegOrMemWithRegToEither(_) => todo!(),
-                    // Address variant.
-                    Sub::ImmToRegOrMem(_) => {
-                        todo!()
+                    Sub::ImmToRegOrMem(ImmediateToRegisterOrMemory {
+                        dst: RegisterOrMemory::Mem(dst),
+                        imm,
+                        ..
+                    }) => {
+                        let mut left = self.from_memory_address(dst, imm.is_wide());
+                        left -= imm;
+                        self.math_to_mem(dst, left);
                     }
                 },
                 Arithmetic::Cmp(cmp) => match *cmp {
@@ -415,6 +573,26 @@ impl Cpu {
                             self.registers.set_flags_from_math(left);
                         }
                     }
+                    Cmp::RegOrMemWithRegToEither(RegMemoryWithRegisterToEither {
+                        register,
+                        reg_or_mem: RegisterOrMemory::Mem(other),
+                        direction,
+                    }) => {
+                        // "Source" is always right hand side - but we'll use
+                        // source to get left hand side to, as in adds it's both
+                        // a source and destination. Behaves like +=
+                        if direction {
+                            let right = self.from_memory_address(other, register.is_wide());
+                            let mut left = self.registers.source(register);
+                            left -= right;
+                            self.registers.set_flags_from_math(left);
+                        } else {
+                            let right = self.registers.source(register);
+                            let mut left = self.from_memory_address(other, register.is_wide());
+                            left -= right;
+                            self.registers.set_flags_from_math(left);
+                        }
+                    }
                     Cmp::ImmToRegOrMem(ImmediateToRegisterOrMemory {
                         dst: RegisterOrMemory::Reg(dst),
                         imm,
@@ -428,12 +606,14 @@ impl Cpu {
                         left -= imm;
                         self.registers.set_flags_from_math(left);
                     }
-
-                    // Address variant.
-                    Cmp::RegOrMemWithRegToEither(_) => todo!(),
-                    // Address variant.
-                    Cmp::ImmToRegOrMem(_) => {
-                        todo!()
+                    Cmp::ImmToRegOrMem(ImmediateToRegisterOrMemory {
+                        dst: RegisterOrMemory::Mem(dst),
+                        imm,
+                        ..
+                    }) => {
+                        let mut left = self.from_memory_address(dst, imm.is_wide());
+                        left -= imm;
+                        self.registers.set_flags_from_math(left);
                     }
                 },
             },
@@ -765,5 +945,177 @@ mod tests {
         const ZF_MASK: u16 = 0b0000_0000_0100_0000;
         assert_ne!(cpu.registers.flags & ZF_MASK, 0, "ZF should be set");
         assert_eq!(cpu.registers.flags & SF_MASK, 0, "SF should be clear");
+    }
+
+    #[test]
+    fn mem_moves_and_indexed_store_then_loads() {
+        use crate::*;
+
+        // Program:
+        // mov word [1000], 1
+        // mov word [1002], 2
+        // mov word [1004], 3
+        // mov word [1006], 4
+        // mov bx, 1000
+        // mov word [bx + 4], 10    ; overwrites [1004]
+        // mov bx, word [1000]
+        // mov cx, word [1002]
+        // mov dx, word [1004]
+        // mov bp, word [1006]
+        let bytes = vec![
+            0xC7, 0x06, 0xE8, 0x03, 0x01, 0x00, 0xC7, 0x06, 0xEA, 0x03, 0x02, 0x00, 0xC7, 0x06,
+            0xEC, 0x03, 0x03, 0x00, 0xC7, 0x06, 0xEE, 0x03, 0x04, 0x00, 0xBB, 0xE8, 0x03, 0xC7,
+            0x47, 0x04, 0x0A, 0x00, 0x8B, 0x1E, 0xE8, 0x03, 0x8B, 0x0E, 0xEA, 0x03, 0x8B, 0x16,
+            0xEC, 0x03, 0x8B, 0x2E, 0xEE, 0x03,
+        ];
+
+        let mut cpu = Cpu::from_instructions(bytes);
+
+        cpu.process_instructions();
+
+        assert_eq!(cpu.registers.bx, 1);
+        assert_eq!(cpu.registers.cx, 2);
+        assert_eq!(cpu.registers.dx, 10);
+        assert_eq!(cpu.registers.bp, 4);
+        assert_eq!(cpu.registers.ip, 48);
+    }
+
+    #[test]
+    fn listing_0051_passes_from_file() {
+        let mut cpu = Cpu::try_from_file("listing_0051_memory_mov")
+            .expect("This file should exist in the repo and parse");
+        cpu.process_instructions();
+
+        assert_eq!(cpu.registers.bx, 1);
+        assert_eq!(cpu.registers.cx, 2);
+        assert_eq!(cpu.registers.dx, 10);
+        assert_eq!(cpu.registers.bp, 4);
+        assert_eq!(cpu.registers.ip, 48);
+    }
+
+    #[test]
+    fn loop_store_and_sum_executes() {
+        use crate::*;
+
+        // Program:
+        // mov dx, 6
+        // mov bp, 1000
+        // mov si, 0
+        // init_loop_start:
+        //   mov word [bp + si], si
+        //   add si, 2
+        //   cmp si, dx
+        //   jnz init_loop_start
+        // mov bx, 0
+        // mov si, 0
+        // add_loop_start:
+        //   mov cx, word [bp + si]
+        //   add bx, cx
+        //   add si, 2
+        //   cmp si, dx
+        //   jnz add_loop_start
+
+        let bytes = vec![
+            0xBA, 0x06, 0x00, 0xBD, 0xE8, 0x03, 0xBE, 0x00, 0x00, 0x89, 0x32, 0x83, 0xC6, 0x02,
+            0x39, 0xD6, 0x75, 0xF7, 0xBB, 0x00, 0x00, 0xBE, 0x00, 0x00, 0x8B, 0x0A, 0x01, 0xCB,
+            0x83, 0xC6, 0x02, 0x39, 0xD6, 0x75, 0xF5,
+        ];
+
+        let mut cpu = Cpu::from_instructions(bytes);
+
+        cpu.process_instructions();
+
+        assert_eq!(cpu.registers.bx, 6);
+        assert_eq!(cpu.registers.cx, 4);
+        assert_eq!(cpu.registers.dx, 6);
+        assert_eq!(cpu.registers.si, 6);
+        assert_eq!(cpu.registers.bp, 1000);
+        assert_eq!(cpu.registers.ip, 35);
+
+        const ZF_MASK: u16 = 0b0000_0000_0100_0000;
+        const SF_MASK: u16 = 0b0000_0000_1000_0000;
+        assert_ne!(cpu.registers.flags & ZF_MASK, 0); // ZF set
+        assert_eq!(cpu.registers.flags & SF_MASK, 0); // SF clear
+    }
+
+    #[test]
+    fn listing_0052_passes_from_file() {
+        let mut cpu = Cpu::try_from_file("listing_0052_memory_add_loop")
+            .expect("This file should exist in the repo and parse");
+        cpu.process_instructions();
+
+        assert_eq!(cpu.registers.bx, 6);
+        assert_eq!(cpu.registers.cx, 4);
+        assert_eq!(cpu.registers.dx, 6);
+        assert_eq!(cpu.registers.si, 6);
+        assert_eq!(cpu.registers.bp, 1000);
+        assert_eq!(cpu.registers.ip, 35);
+
+        const ZF_MASK: u16 = 0b0000_0000_0100_0000;
+        const SF_MASK: u16 = 0b0000_0000_1000_0000;
+        assert_ne!(cpu.registers.flags & ZF_MASK, 0); // ZF set
+        assert_eq!(cpu.registers.flags & SF_MASK, 0); // SF clear
+    }
+
+    #[test]
+    fn two_phase_init_then_sum_with_backward_jumps() {
+        use crate::*;
+
+        // Program:
+        // mov dx, 6
+        // mov bp, 1000
+        // mov si, 0
+        // init_loop_start:
+        //   mov word [bp + si], si
+        //   add si, 2
+        //   cmp si, dx
+        //   jnz init_loop_start
+        //
+        // mov bx, 0
+        // mov si, dx
+        // sub bp, 2
+        // add_loop_start:
+        //   add bx, word [bp + si]
+        //   sub si, 2
+        //   jnz add_loop_start
+
+        let bytes = vec![
+            0xBA, 0x06, 0x00, 0xBD, 0xE8, 0x03, 0xBE, 0x00, 0x00, 0x89, 0x32, 0x83, 0xC6, 0x02,
+            0x39, 0xD6, 0x75, 0xF7, 0xBB, 0x00, 0x00, 0x89, 0xD6, 0x83, 0xED, 0x02, 0x03, 0x1A,
+            0x83, 0xEE, 0x02, 0x75, 0xF9,
+        ];
+
+        let mut cpu = Cpu::from_instructions(bytes);
+
+        cpu.process_instructions();
+
+        assert_eq!(cpu.registers.bx, 6);
+        assert_eq!(cpu.registers.si, 0);
+        assert_eq!(cpu.registers.dx, 6);
+        assert_eq!(cpu.registers.bp, 998);
+        assert_eq!(cpu.registers.ip, 33);
+
+        const ZF_MASK: u16 = 0b0000_0000_0100_0000;
+        const SF_MASK: u16 = 0b0000_0000_1000_0000;
+        assert_ne!(cpu.registers.flags & ZF_MASK, 0); // ZF set
+        assert_eq!(cpu.registers.flags & SF_MASK, 0); // SF clear
+    }
+
+    #[test]
+    fn listing_0053_passes_from_file() {
+        let mut cpu = Cpu::try_from_file("listing_0053_add_loop_challenge")
+            .expect("This file should exist in the repo and parse");
+        cpu.process_instructions();
+
+        assert_eq!(cpu.registers.bx, 6);
+        assert_eq!(cpu.registers.si, 0);
+        assert_eq!(cpu.registers.dx, 6);
+        assert_eq!(cpu.registers.bp, 998);
+        assert_eq!(cpu.registers.ip, 33);
+
+        const ZF_MASK: u16 = 0b0000_0000_0100_0000;
+        const SF_MASK: u16 = 0b0000_0000_1000_0000;
+        assert_ne!(cpu.registers.flags & ZF_MASK, 0); // ZF set
+        assert_eq!(cpu.registers.flags & SF_MASK, 0); // SF clear
     }
 }

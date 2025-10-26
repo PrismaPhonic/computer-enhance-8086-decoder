@@ -169,8 +169,8 @@ impl RegOrMemToOrFromReg {
 }
 
 pub struct AccToOrFromMemory {
-    source: RegisterOrMemory,
-    destination: RegisterOrMemory,
+    pub source: RegisterOrMemory,
+    pub destination: RegisterOrMemory,
 }
 
 impl AccToOrFromMemory {
@@ -233,6 +233,7 @@ impl fmt::Display for AccToOrFromMemory {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct ImmediateToRegister {
     pub register: Register,
     pub immediate: Immediate,
@@ -296,8 +297,8 @@ impl fmt::Display for ImmediateToRegister {
 }
 
 pub struct ImmediateToMemory {
-    destination: Address,
-    immediate: Immediate,
+    pub destination: Address,
+    pub immediate: Immediate,
 }
 
 impl fmt::Display for ImmediateToMemory {

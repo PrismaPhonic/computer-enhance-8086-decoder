@@ -92,6 +92,21 @@ impl Register {
             _ => None,
         }
     }
+
+    pub fn is_wide(&self) -> bool {
+        match self {
+            Self::AL
+            | Self::CL
+            | Self::DL
+            | Self::BL
+            | Self::AH
+            | Self::CH
+            | Self::DH
+            | Self::BH => false,
+
+            _ => true,
+        }
+    }
 }
 
 // Mod notes:
@@ -355,6 +370,10 @@ impl Immediate {
             Immediate::Full(v) => (v < 0, v.unsigned_abs()),
         }
     }
+
+    pub fn is_wide(&self) -> bool {
+        matches!(self, Immediate::Full(_))
+    }
 }
 
 impl fmt::Display for Immediate {
@@ -429,6 +448,21 @@ impl From<Immediate> for i16 {
             Immediate::Half(v) => v as i16,
             Immediate::Full(v) => v,
         }
+    }
+}
+
+impl From<Immediate> for usize {
+    fn from(value: Immediate) -> Self {
+        match value {
+            Immediate::Half(v) => v as usize,
+            Immediate::Full(v) => v as usize,
+        }
+    }
+}
+
+impl Default for Immediate {
+    fn default() -> Self {
+        Self::Full(0)
     }
 }
 
