@@ -122,8 +122,8 @@ impl RegOrMemToOrFromReg {
 
         let bytes = bytes.take(need)?;
 
-        let w_set = Self::w_set(&bytes);
-        let d_set = Self::d_set(&bytes);
+        let w_set = Self::w_set(bytes);
+        let d_set = Self::d_set(bytes);
 
         match mod_field {
             // Register to Register.
@@ -533,12 +533,13 @@ impl fmt::Display for RegOrMemToOrFromReg {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::Cpu;
 
     #[test]
     fn parses_multiple_movs_correctly() {
-        let ops = Operations::try_from_file("many_register_mov")
+        let mut cpu = Cpu::try_from_file("many_register_mov")
             .expect("This file should exist in the repo and parse");
+        let ops = cpu.generate_operations();
 
         let rendered = ops.to_string();
 
@@ -564,7 +565,8 @@ mov bp, ax";
             0x89, 0xC8, 0xB1, 0x7F, 0xBA, 0x34, 0x12, 0xB8, 0x00, 0x80, 0x88, 0xC7,
         ];
 
-        let ops = Operations::from_bytes(bytes);
+        let mut cpu = Cpu::from_instructions(bytes);
+        let ops = cpu.generate_operations();
         let rendered = ops.to_string();
 
         let expected = "\
@@ -598,7 +600,8 @@ mov bh, al";
             0x88, 0x6E, 0x00, // mov [bp], ch
         ];
 
-        let ops = Operations::from_bytes(bytes);
+        let mut cpu = Cpu::from_instructions(bytes);
+        let ops = cpu.generate_operations();
         let rendered = ops.to_string();
 
         let expected = "\
@@ -624,9 +627,10 @@ mov [bp], ch";
 
     #[test]
     fn listing_0039_passes_from_file() {
-        let ops = Operations::try_from_file("listing_0039_more_movs")
+        let mut cpu = Cpu::try_from_file("listing_0039_more_movs")
             .expect("This file should exist in the repo and parse");
 
+        let ops = cpu.generate_operations();
         let rendered = ops.to_string();
 
         let expected = "\
@@ -658,7 +662,8 @@ mov [bp], ch";
             0x8B, 0x57, 0xE0, // mov dx, [bx - 32]
         ];
 
-        let ops = Operations::from_bytes(bytes);
+        let mut cpu = Cpu::from_instructions(bytes);
+        let ops = cpu.generate_operations();
         let rendered = ops.to_string();
 
         let expected = "\
@@ -678,7 +683,8 @@ mov dx, [bx - 32]";
             0xA3, 0x0F, 0x00, // mov [15], ax
         ];
 
-        let ops = Operations::from_bytes(bytes);
+        let mut cpu = Cpu::from_instructions(bytes);
+        let ops = cpu.generate_operations();
         let rendered = ops.to_string();
 
         let expected = "\
@@ -699,7 +705,8 @@ mov [15], ax";
             0xA2, 0x0F, 0x00, // mov [15], al
         ];
 
-        let ops = Operations::from_bytes(bytes);
+        let mut cpu = Cpu::from_instructions(bytes);
+        let ops = cpu.generate_operations();
         let rendered = ops.to_string();
 
         let expected = "\
@@ -720,7 +727,8 @@ mov [15], al";
             0x8B, 0x1E, 0x82, 0x0D, // mov bx, [3458]
         ];
 
-        let ops = Operations::from_bytes(bytes);
+        let mut cpu = Cpu::from_instructions(bytes);
+        let ops = cpu.generate_operations();
         let rendered = ops.to_string();
 
         let expected = "\
@@ -734,9 +742,10 @@ mov bx, [3458]";
 
     #[test]
     fn listing_0040_passes_from_file() {
-        let ops = Operations::try_from_file("listing_0040_challenge_movs")
+        let mut cpu = Cpu::try_from_file("listing_0040_challenge_movs")
             .expect("This file should exist in the repo and parse");
 
+        let ops = cpu.generate_operations();
         let rendered = ops.to_string();
 
         let expected = "\
@@ -757,8 +766,6 @@ mov [15], ax";
 
     #[test]
     fn mov_segment_reg_and_mem_prints() {
-        use crate::*;
-
         let bytes = vec![
             0x8E, 0xDB, // mov ds, bx
             0x8C, 0xD8, // mov ax, ds
@@ -768,9 +775,10 @@ mov [15], ax";
             0x8C, 0xCB, // mov bx, cs
         ];
 
-        let ops = Operations::from_bytes(bytes);
-
+        let mut cpu = Cpu::from_instructions(bytes);
+        let ops = cpu.generate_operations();
         let rendered = ops.to_string();
+
         let expected = "\
 mov ds, bx
 mov ax, ds

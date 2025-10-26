@@ -1,4 +1,4 @@
-use std::{fmt, fs};
+use std::fmt;
 
 pub mod goto;
 pub mod math;
@@ -7,12 +7,6 @@ pub mod mov;
 pub use goto::Jump;
 pub use math::{Add, Arithmetic, Cmp, Sub};
 pub use mov::Mov;
-
-use math::{ImmediateToAccumulator, RegMemoryWithRegisterToEither};
-use mov::{
-    AccToOrFromMemory, ImmediateToMemory, ImmediateToRegister, RegOrMemToOrFromReg,
-    SegToOrFromRegOrMem,
-};
 
 use crate::collections::Instructions;
 
@@ -429,6 +423,15 @@ impl std::ops::SubAssign for Immediate {
     }
 }
 
+impl From<Immediate> for i16 {
+    fn from(value: Immediate) -> Self {
+        match value {
+            Immediate::Half(v) => v as i16,
+            Immediate::Full(v) => v,
+        }
+    }
+}
+
 pub struct Operations(Vec<Operation>);
 
 impl fmt::Display for Operations {
@@ -449,62 +452,9 @@ impl AsRef<[Operation]> for Operations {
     }
 }
 
-impl Operations {
-    pub fn from_bytes(bytes: Vec<u8>) -> Self {
-        let mut out = vec![];
-        let mut instructions: Instructions = bytes.into();
-        while !instructions.is_empty() {
-            let start_len = instructions.len();
-
-            let op = instructions[0];
-            let decoded = if AccToOrFromMemory::opcode_matches(op)
-                || ImmediateToRegister::opcode_matches(op)
-                || ImmediateToMemory::opcode_matches(op)
-                || RegOrMemToOrFromReg::opcode_matches(op)
-            {
-                Mov::try_decode(&mut instructions).map(Operation::from)
-            } else if let Some(source) = SegToOrFromRegOrMem::classify(op) {
-                SegToOrFromRegOrMem::try_decode(&mut instructions, source)
-                    .map(Mov::from)
-                    .map(Operation::from)
-            } else if let Some(opkind) = RegMemoryWithRegisterToEither::classify(op) {
-                RegMemoryWithRegisterToEither::try_decode(&mut instructions, opkind)
-                    .map(Operation::from)
-            } else if let Some(opkind) = ImmediateToAccumulator::classify(op) {
-                ImmediateToAccumulator::try_decode(&mut instructions, opkind).map(Operation::from)
-            } else if math::ImmediateToRegisterOrMemory::opcode_matches(op) {
-                math::ImmediateToRegisterOrMemory::try_decode(&mut instructions)
-                    .map(Operation::from)
-            } else if let Some(jmp) = Jump::try_decode(&mut instructions) {
-                Some(Operation::from(jmp))
-            } else {
-                panic!("Unsupported op code");
-            };
-
-            match decoded {
-                Some(opnode) => out.push(opnode),
-                None => {
-                    // If we get here, a decoder was chosen but didn't consume bytes (truncated instr).
-                    // Fail fast with location + opcode.
-                    let consumed = start_len - instructions.len();
-                    panic!(
-                        "Truncated instruction starting at byte {:02X} (consumed {}, op {:02X})",
-                        op, consumed, op
-                    );
-                }
-            }
-        }
-
-        Self(out)
-    }
-
-    pub fn try_from_file(file_path: &str) -> std::io::Result<Self> {
-        let path = std::path::PathBuf::from(file_path);
-        let absolute = path.canonicalize().expect("Failed to create absolute path");
-        println!("path: {:?}", absolute);
-        let bytes = fs::read(absolute)?;
-
-        Ok(Self::from_bytes(bytes))
+impl From<Vec<Operation>> for Operations {
+    fn from(value: Vec<Operation>) -> Self {
+        Self(value)
     }
 }
 

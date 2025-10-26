@@ -452,7 +452,7 @@ impl ImmediateToAccumulator {
 
 #[cfg(test)]
 mod tests {
-    use crate::decode::*;
+    use crate::Cpu;
 
     #[test]
     fn add_reg_mem_with_register_to_either() {
@@ -475,7 +475,8 @@ mod tests {
             0x02, 0xC4, // add al, ah
         ];
 
-        let ops = Operations::from_bytes(bytes);
+        let mut cpu = Cpu::from_instructions(bytes);
+        let ops = cpu.generate_operations();
         let rendered = ops.to_string();
 
         let expected = "\
@@ -522,7 +523,8 @@ add al, ah";
             0x81, 0x3E, 0xE2, 0x12, 0x1D, 0x00, // cmp word [4834], 29  (direct addr = 0x12E2)
         ];
 
-        let ops = Operations::from_bytes(bytes);
+        let mut cpu = Cpu::from_instructions(bytes);
+        let ops = cpu.generate_operations();
         let rendered = ops.to_string();
 
         let expected = "\
@@ -584,7 +586,8 @@ cmp word [4834], 29";
             0x3A, 0xC4, // cmp al, ah
         ];
 
-        let ops = Operations::from_bytes(bytes);
+        let mut cpu = Cpu::from_instructions(bytes);
+        let ops = cpu.generate_operations();
         let rendered = ops.to_string();
 
         let expected = "\
@@ -631,7 +634,8 @@ cmp al, ah";
             0x3D, 0xE8, 0x03, 0x3C, 0xE2, 0x3C, 0x09,
         ];
 
-        let ops = Operations::from_bytes(bytes);
+        let mut cpu = Cpu::from_instructions(bytes);
+        let ops = cpu.generate_operations();
         let rendered = ops.to_string();
 
         let expected = "\

@@ -39,7 +39,11 @@ impl Instructions {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        (self.bytes.len() as i16 - self.head as i16) <= 0
+    }
+
+    pub fn set_head(&mut self, new: usize) {
+        self.head = new;
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::{collections::Instructions, decode::Immediate};
+use crate::{ZF_MASK, collections::Instructions, decode::Immediate};
 use std::fmt;
 
 pub enum JumpKind {
@@ -56,7 +56,7 @@ pub struct Jump {
     kind: JumpKind,
     // Destination in bytes ahead or behind where we are currently.
     // Will always be 8 bit (Immediate::Half).
-    disp: Immediate,
+    pub(crate) disp: Immediate,
 }
 
 impl fmt::Display for Jump {
@@ -105,11 +105,41 @@ impl Jump {
             disp: Immediate::from_lo(bytes[1]),
         })
     }
+
+    pub fn should_jump(&self, flags_register: u16) -> bool {
+        match self.kind {
+            JumpKind::Jnz => {
+                let zero = flags_register & ZF_MASK == ZF_MASK;
+                !zero
+            }
+
+            JumpKind::Je => todo!(),
+            JumpKind::Jp => todo!(),
+            JumpKind::Jb => todo!(),
+            JumpKind::Loopnz => todo!(),
+
+            JumpKind::Jl => todo!(),
+            JumpKind::Jle => todo!(),
+            JumpKind::Jbe => todo!(),
+            JumpKind::Jo => todo!(),
+            JumpKind::Js => todo!(),
+            JumpKind::Jnl => todo!(),
+            JumpKind::Jg => todo!(),
+            JumpKind::Jnb => todo!(),
+            JumpKind::Ja => todo!(),
+            JumpKind::Jnp => todo!(),
+            JumpKind::Jno => todo!(),
+            JumpKind::Jns => todo!(),
+            JumpKind::Loop => todo!(),
+            JumpKind::Loopz => todo!(),
+            JumpKind::Jcxz => todo!(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::decode::Operations;
+    use crate::Cpu;
 
     #[test]
     fn jumps_disassemble_correctly() {
@@ -121,7 +151,8 @@ mod tests {
             0xE2, 0xFE, // loop short -2
         ];
 
-        let ops = Operations::from_bytes(bytes);
+        let mut cpu = Cpu::from_instructions(bytes);
+        let ops = cpu.generate_operations();
         let rendered = ops.to_string();
 
         let expected = "\
@@ -136,9 +167,10 @@ loop short -2";
 
     #[test]
     fn listing_0041_add_sub_jnz() {
-        let ops = Operations::try_from_file("listing_0041_add_sub_jnz")
+        let mut cpu = Cpu::try_from_file("listing_0041_add_sub_jnz")
             .expect("This file should exist in the repo and parse");
 
+        let ops = cpu.generate_operations();
         let rendered = ops.to_string();
 
         let expected = "\
