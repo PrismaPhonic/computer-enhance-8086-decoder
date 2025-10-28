@@ -222,6 +222,33 @@ impl Address {
             _ => unreachable!(),
         }
     }
+
+    /// Returns the estimated clock cycles for the address calculation.
+    pub fn effective_address_cycles(&self) -> u16 {
+        match self {
+            Address::DirectAddress(_) => 6,
+
+            Address::Bx(None) | Address::Si(None) | Address::Di(None) => 5,
+
+            Address::BpDi(None) | Address::BxSi(None) => 7,
+
+            Address::BxDi(None) | Address::BpSi(None) => 8,
+
+            Address::Si(Some(_)) | Address::Di(Some(_)) | Address::Bx(Some(_)) => 9,
+
+            Address::BpDi(Some(_)) | Address::BxSi(Some(_)) => 11,
+
+            Address::BpSi(Some(_)) | Address::BxDi(Some(_)) => 12,
+
+            Address::Bp(imm) => {
+                if imm.is_zero() {
+                    5
+                } else {
+                    9
+                }
+            }
+        }
+    }
 }
 
 impl fmt::Display for Register {
@@ -297,6 +324,17 @@ pub enum Operation {
     Mov(Mov),
     Math(Arithmetic),
     Jump(Jump),
+}
+
+impl Operation {
+    pub fn estimated_cycles(&self) -> u16 {
+        match self {
+            Operation::Mov(mov) => mov.estimated_cycles(),
+            Operation::Math(arithmetic) => arithmetic.estimated_cycles(),
+            // TODO.
+            Operation::Jump(_) => 0,
+        }
+    }
 }
 
 impl From<Mov> for Operation {
@@ -468,6 +506,18 @@ impl Default for Immediate {
 
 pub struct Operations(Vec<Operation>);
 
+impl Operations {
+    pub fn estimated_cycles(&self) -> u16 {
+        let mut acc = 0;
+        for op in self.as_ref() {
+            let clock = op.estimated_cycles();
+            acc += clock;
+            println!("op: {op} ; Clocks: +{clock} = {acc}");
+        }
+        acc
+    }
+}
+
 impl fmt::Display for Operations {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (i, op) in self.0.iter().enumerate() {
@@ -516,5 +566,23 @@ impl fmt::Display for RegisterOrMemory {
             RegisterOrMemory::Reg(register) => register.fmt(f),
             RegisterOrMemory::Mem(address) => address.fmt(f),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Cpu;
+
+    #[test]
+    fn listing_0056_passes_from_file() {
+        let mut cpu = Cpu::try_from_file("listing_0056_estimating_cycles")
+            .expect("This file should exist in the repo and parse");
+
+        let ops = cpu.generate_operations();
+
+        let expected = 192;
+        let got = ops.estimated_cycles();
+
+        assert_eq!(got, expected);
     }
 }

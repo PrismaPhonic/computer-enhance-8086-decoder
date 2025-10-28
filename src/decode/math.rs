@@ -30,6 +30,16 @@ impl Arithmetic {
             None
         }
     }
+
+    pub fn estimated_cycles(&self) -> u16 {
+        match self {
+            Arithmetic::Add(add) => add.estimated_cycles(),
+            // TODO: Left as zero for now because this will break early testing
+            // if these are actually todo!() macros
+            Arithmetic::Sub(_) => 0,
+            Arithmetic::Cmp(_) => 0,
+        }
+    }
 }
 
 impl fmt::Display for Arithmetic {
@@ -65,6 +75,31 @@ pub enum Add {
     RegOrMemWithRegToEither(RegMemoryWithRegisterToEither),
     ImmToRegOrMem(ImmediateToRegisterOrMemory),
     ImmToAcc(ImmediateToAccumulator),
+}
+
+impl Add {
+    pub fn estimated_cycles(&self) -> u16 {
+        match self {
+            Add::RegOrMemWithRegToEither(inner) => {
+                match (inner.reg_or_mem, inner.direction) {
+                    (RegisterOrMemory::Reg(_), _) => 3,
+                    (RegisterOrMemory::Mem(addr), true) => {
+                        // Memory is the source.
+                        9 + addr.effective_address_cycles()
+                    }
+                    (RegisterOrMemory::Mem(addr), false) => {
+                        // Reg is the source.
+                        16 + addr.effective_address_cycles()
+                    }
+                }
+            }
+            Add::ImmToRegOrMem(inner) => match inner.dst {
+                RegisterOrMemory::Reg(_) => 4,
+                RegisterOrMemory::Mem(addr) => 17 + addr.effective_address_cycles(),
+            },
+            Add::ImmToAcc(_) => 4,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

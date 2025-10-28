@@ -166,6 +166,19 @@ impl RegOrMemToOrFromReg {
             }
         }
     }
+
+    pub fn estimated_cycles(&self) -> u16 {
+        match (self.destination, self.source) {
+            (RegisterOrMemory::Reg(_), RegisterOrMemory::Reg(_)) => 2,
+            (RegisterOrMemory::Reg(_), RegisterOrMemory::Mem(addr)) => {
+                8 + addr.effective_address_cycles()
+            }
+            (RegisterOrMemory::Mem(addr), RegisterOrMemory::Reg(_)) => {
+                9 + addr.effective_address_cycles()
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 pub struct AccToOrFromMemory {
@@ -224,6 +237,10 @@ impl AccToOrFromMemory {
                 destination: Address::DirectAddress(immediate).into(),
             })
         }
+    }
+
+    pub const fn estimated_cycles(&self) -> u16 {
+        10
     }
 }
 
@@ -285,8 +302,12 @@ impl ImmediateToRegister {
 
         Some(ImmediateToRegister {
             register: Register::from_code(reg_field, w_set),
-            immediate: Self::immediate(&bytes, w_set),
+            immediate: Self::immediate(bytes, w_set),
         })
+    }
+
+    pub const fn estimated_cycles(&self) -> u16 {
+        4
     }
 }
 
@@ -398,8 +419,12 @@ impl ImmediateToMemory {
                 (displacement >= 1).then(|| bytes[2]),
                 (displacement == 2).then(|| bytes[3]),
             ),
-            immediate: Self::immediate(&bytes, displacement, w_set),
+            immediate: Self::immediate(bytes, displacement, w_set),
         })
+    }
+
+    pub fn estimated_cycles(&self) -> u16 {
+        10 + self.destination.effective_address_cycles()
     }
 }
 
@@ -499,6 +524,18 @@ impl SegToOrFromRegOrMem {
             }
         }
     }
+
+    pub fn estimated_cycles(&self) -> u16 {
+        match (self.other, self.source) {
+            (RegisterOrMemory::Reg(_), Source::Segment)
+            | (RegisterOrMemory::Reg(_), Source::RegisterOrMemory) => 2,
+
+            (RegisterOrMemory::Mem(addr), Source::Segment) => 9 + addr.effective_address_cycles(),
+            (RegisterOrMemory::Mem(addr), Source::RegisterOrMemory) => {
+                8 + addr.effective_address_cycles()
+            }
+        }
+    }
 }
 
 impl Mov {
@@ -522,6 +559,16 @@ impl Mov {
             SegToOrFromRegOrMem::try_decode(bytes, source).map(Mov::from)
         } else {
             None
+        }
+    }
+
+    pub fn estimated_cycles(&self) -> u16 {
+        match self {
+            Mov::RegOrMemToOrFromReg(inner) => inner.estimated_cycles(),
+            Mov::ImmediateToRegister(inner) => inner.estimated_cycles(),
+            Mov::ImmediateToMemory(inner) => inner.estimated_cycles(),
+            Mov::AccToOrFromMem(inner) => inner.estimated_cycles(),
+            Mov::Segment(inner) => inner.estimated_cycles(),
         }
     }
 }
